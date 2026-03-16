@@ -85,7 +85,7 @@ See `docs/ggml_subtree_maintenance_strategy.md` for the longer-term maintenance 
 
 **Test environment:**
 - Platform: Orange Pi 6 Plus
-- SoC: Rockchip RK3576
+- SoC: CIX P1 CD8160
 - CPU: 12 cores (2x A720 @ 2.6GHz + 6x A720 @ 2.5GHz + 4x A520 @ 1.8GHz)
 - Arch: aarch64 with SVE, SVE2, BF16, i8mm
 - Threads: 8

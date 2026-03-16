@@ -87,7 +87,7 @@ ctest --output-on-failure
 
 **测试环境：**
 - 平台：Orange Pi 6 Plus
-- SoC：Rockchip RK3576
+- SoC：CIX P1 CD8160
 - CPU：12 核 (2x A720 @ 2.6GHz + 6x A720 @ 2.5GHz + 4x A520 @ 1.8GHz)
 - 架构：aarch64，支持 SVE、SVE2、BF16、i8mm
 - 线程：8
