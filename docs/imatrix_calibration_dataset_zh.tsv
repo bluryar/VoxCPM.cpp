@@ -1,0 +1,12 @@
+# Format:
+# text
+# or
+# text<TAB>prompt_text<TAB>prompt_audio
+#
+# Lines starting with # are ignored.
+# Use absolute paths for prompt_audio to avoid ambiguity.
+
+今天先测试一段不带参考音频的普通合成文本。
+请播报一下今天的行程安排。	可哪怕位于堂堂超一品官职,在十 二郡一言九鼎的大柱国口干舌燥了,这少年还是没什么反应	/home/orangepi/Codes/ggbond/examples/dabin.wav
+这是一段包含 English words 和数字 2026 的混合文本。	可哪怕位于堂堂超一品官职,在十 二郡一言九鼎的大柱国口干舌燥了,这少年还是没什么反应	/home/orangepi/Codes/ggbond/examples/dabin.wav
+请把订单编号 A-203 和收货时间下午三点半完整读出来。	可哪怕位于堂堂超一品官职,在十 二郡一言九鼎的大柱国口干舌燥了,这少年还是没什么反应	/home/orangepi/Codes/ggbond/examples/dabin.wav

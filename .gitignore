@@ -1,0 +1,25 @@
+build/
+build-*/
+build-vulkan/
+Testing/
+compile_commands.json
+
+.vscode/
+.idea/
+.claude/
+
+models/
+
+tests/fixtures/trace/
+
+# Keep ggml in-repo; other cloned references stay local-only.
+third_party/json/
+third_party/llama.cpp/
+third_party/SenseVoice.cpp/
+third_party/whisper.cpp/
+
+# Ignore ggml build outputs while keeping subtree sources tracked.
+third_party/ggml/build/
+third_party/ggml/.cache/
+
+_fetch/

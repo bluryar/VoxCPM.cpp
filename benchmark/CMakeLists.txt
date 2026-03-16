@@ -1,0 +1,3 @@
+add_executable(voxcpm_benchmark voxcpm_benchmark.cpp)
+target_link_libraries(voxcpm_benchmark PRIVATE voxcpm)
+
