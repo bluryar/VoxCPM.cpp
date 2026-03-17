@@ -2,6 +2,8 @@
 
 基于 `ggml` 构建的 VoxCPM 模型独立 C++ 推理项目。
 
+VoxCPM 官方仓库：https://github.com/OpenBMB/VoxCPM
+
 [English](README.md)
 
 ## 状态

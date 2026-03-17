@@ -2,6 +2,10 @@
 
 Standalone C++ inference project for VoxCPM models built on top of `ggml`.
 
+VoxCPM Official Repository: https://github.com/OpenBMB/VoxCPM
+
+[中文文档](README_zh.md)
+
 ## Status
 
 This directory now serves as the standalone repository root for `VoxCPM.cpp`.
@@ -92,5 +96,3 @@ See `docs/ggml_subtree_maintenance_strategy.md` for the longer-term maintenance 
 - Arch: aarch64 with SVE, SVE2, BF16, i8mm
 - Threads: 8
 - Backend: CPU
-
-[中文文档](README_zh.md)
