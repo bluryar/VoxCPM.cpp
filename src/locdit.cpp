@@ -457,12 +457,10 @@ void LocDiTModel::forward_cfg_pair_projected(VoxCPMContext& ctx,
                                                      paired_hidden->nb[1],
                                                      static_cast<size_t>(branch_len + prefix_len + 1) * paired_hidden->nb[1]);
 
-    *conditioned = ggml_add(raw,
-                            ggml_mul_mat(raw, weights_.out_proj_weight, conditioned_hidden),
-                            weights_.out_proj_bias);
-    *unconditioned = ggml_add(raw,
-                              ggml_mul_mat(raw, weights_.out_proj_weight, unconditioned_hidden),
-                              weights_.out_proj_bias);
+    ggml_tensor* conditioned_out = ggml_mul_mat(raw, weights_.out_proj_weight, conditioned_hidden);
+    ggml_tensor* unconditioned_out = ggml_mul_mat(raw, weights_.out_proj_weight, unconditioned_hidden);
+    *conditioned = ggml_add(raw, conditioned_out, weights_.out_proj_bias);
+    *unconditioned = ggml_add(raw, unconditioned_out, weights_.out_proj_bias);
 }
 
 ggml_tensor* LocDiTModel::forward(VoxCPMContext& ctx,

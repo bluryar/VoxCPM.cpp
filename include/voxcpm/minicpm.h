@@ -130,7 +130,9 @@ public:
     bool uses_shared_weights() const { return shared_store_ != nullptr; }
 
 private:
-    ggml_tensor* rms_norm(ggml_context* ctx, ggml_tensor* x, ggml_tensor* weight) const;
+    ggml_tensor* rms_norm(ggml_context* ctx,
+                          ggml_tensor* x,
+                          ggml_tensor* weight) const;
     ggml_tensor* apply_rope(ggml_context* ctx, ggml_tensor* x, ggml_tensor* positions, int seq_len) const;
     ggml_tensor* create_causal_mask(ggml_context* ctx, ggml_tensor* positions, int total_len) const;
 

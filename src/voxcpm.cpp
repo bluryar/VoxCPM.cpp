@@ -883,14 +883,17 @@ void VoxCPMRuntime::run_decode_front_half(const std::vector<float>& z,
     VOXCPM_ASSERT(static_cast<int>(z.size()) == config_.feat_dim * config_.patch_size);
     VOXCPM_ASSERT(static_cast<int>(lm_hidden.size()) == base_lm_.config().hidden_size);
     VOXCPM_ASSERT(static_cast<int>(residual_hidden.size()) == residual_lm_.config().hidden_size);
-    VOXCPM_ASSERT(static_cast<int>(prefix_feat_cond.size()) == config_.feat_dim * config_.patch_size);
+    VOXCPM_ASSERT(static_cast<int>(prefix_feat_cond.size()) == config_.patch_size * config_.feat_dim);
 
     VoxCPMCachedGraph& cached = ensure_decode_front_half_graph(inference_timesteps, cfg_value);
     backend_->alloc_graph(cached.graph, "runtime.decode_front_half.cached");
     backend_->tensor_set(cached.input0, z.data(), 0, z.size() * sizeof(float));
     backend_->tensor_set(cached.input1, lm_hidden.data(), 0, lm_hidden.size() * sizeof(float));
     backend_->tensor_set(cached.input2, residual_hidden.data(), 0, residual_hidden.size() * sizeof(float));
-    backend_->tensor_set(cached.input3, prefix_feat_cond.data(), 0, prefix_feat_cond.size() * sizeof(float));
+    backend_->tensor_set(cached.input3,
+                         prefix_feat_cond.data(),
+                         0,
+                         prefix_feat_cond.size() * sizeof(float));
     if (cached.input4 && !cached.aux_input4.empty()) {
         backend_->tensor_set(cached.input4, cached.aux_input4.data(), 0, cached.aux_input4.size() * sizeof(float));
     }

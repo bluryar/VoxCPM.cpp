@@ -569,8 +569,14 @@ bool MiniCPMModel::load_from_store(const std::shared_ptr<VoxCPMWeightStore>& sto
     return ok && init_aux_tensors(backend) && init_fused_projection_tensors(backend, prefix_norm);
 }
 
-ggml_tensor* MiniCPMModel::rms_norm(ggml_context* ctx, ggml_tensor* x, ggml_tensor* weight) const {
-    return ggml_mul(ctx, ggml_rms_norm(ctx, x, config_.rms_norm_eps), weight);
+ggml_tensor* MiniCPMModel::rms_norm(ggml_context* ctx,
+                                    ggml_tensor* x,
+                                    ggml_tensor* weight) const {
+    ggml_tensor* normed = ggml_rms_norm(ctx, x, config_.rms_norm_eps);
+    if (weight == nullptr) {
+        return normed;
+    }
+    return ggml_mul(ctx, normed, weight);
 }
 
 ggml_tensor* MiniCPMModel::apply_rope(ggml_context* ctx,
