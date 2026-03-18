@@ -36,7 +36,7 @@
   - 不属于 CUDA 主修复核心，但保留无害。
 
 ### 2.3 当前工作区中的其他改动 / 非本轮核心改动
-- `scripts/quantize_benchmark.sh`
+- `scripts/export_quantized_weights.sh`
   - 将若干 `bc` 改成了 `awk` 计算格式化输出。
   - 这不是 CUDA 修复链路的一部分，应视为独立改动。
 
@@ -273,7 +273,6 @@
   - 当前仅剩一个 `std::move` 小优化
 
 ### 与本轮 CUDA 主线无关，建议单独处理
-- `scripts/quantize_benchmark.sh`
+- `scripts/export_quantized_weights.sh`
 - `out5.wav`
 - `voxcpm_stream_single_final.wav`
-

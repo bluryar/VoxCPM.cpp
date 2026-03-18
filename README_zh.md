@@ -55,18 +55,43 @@ ctest --output-on-failure
 | voxcpm-0.5b | Q8_0 | 766 | 3.62x |
 | voxcpm-0.5b | Q4_K | 477 | 5.82x |
 
-### 推理性能 (RTF - 越低越好)
+### CPU 推理性能 (RTF - 越低越好)
 
 | Model | Quant | Model Only | Without Encode | Full Pipeline |
 |-------|-------|------------|----------------|---------------|
-| voxcpm1.5 | **Q4_K** | **2.86** | **3.91** | 4.98 |
-| voxcpm1.5 | Q8_0 | 3.48 | 4.51 | 5.90 |
-| voxcpm1.5 | F32 | 3.93 | 4.66 | 5.85 |
-| voxcpm1.5 | F16 | 10.28 | 11.56 | 15.02 |
-| voxcpm-0.5b | **Q4_K** | **2.16** | **2.72** | 3.83 |
-| voxcpm-0.5b | Q8_0 | 2.76 | 3.25 | 4.68 |
-| voxcpm-0.5b | F32 | 3.67 | 4.00 | 5.19 |
-| voxcpm-0.5b | F16 | 6.78 | 7.36 | 9.92 |
+| voxcpm1.5 | Q4_K | 2.395 | 3.395 | 5.598 |
+| voxcpm1.5 | **Q4_K+AudioVAE-F16** | **1.873** | **2.848** | 4.433 |
+| voxcpm1.5 | **Q8_0** | 2.086 | 2.982 | **4.291** |
+| voxcpm1.5 | Q8_0+AudioVAE-F16 | 2.285 | 3.321 | 5.248 |
+| voxcpm1.5 | F16 | 3.257 | 4.366 | 6.263 |
+| voxcpm1.5 | F16+AudioVAE-F16 | 2.980 | 3.915 | 5.374 |
+| voxcpm1.5 | F32 | 4.820 | 5.737 | 7.494 |
+| voxcpm-0.5b | **Q4_K** | **1.826** | **2.219** | **3.609** |
+| voxcpm-0.5b | Q4_K+AudioVAE-F16 | 1.895 | 2.295 | 3.915 |
+| voxcpm-0.5b | Q8_0 | 2.155 | 2.546 | 3.873 |
+| voxcpm-0.5b | Q8_0+AudioVAE-F16 | 1.913 | 2.284 | 3.638 |
+| voxcpm-0.5b | F16 | 2.558 | 2.931 | 4.086 |
+| voxcpm-0.5b | F16+AudioVAE-F16 | 2.685 | 3.057 | 4.409 |
+| voxcpm-0.5b | F32 | 3.691 | 4.055 | 5.260 |
+
+### CUDA 推理性能 (RTF - 越低越好)
+
+| Model | Variant | AudioVAE | Model Only | Without Encode | Full Pipeline | Total Time (s) |
+|-------|---------|----------|------------|----------------|---------------|----------------|
+| voxcpm1.5 | Q4_K | mixed | 0.342 | 0.432 | 0.622 | 2.189 |
+| voxcpm1.5 | Q4_K+AudioVAE-F16 | f16 | 0.336 | 0.426 | 0.596 | 2.192 |
+| voxcpm1.5 | Q8_0 | mixed | **0.320** | **0.411** | 0.596 | 2.002 |
+| voxcpm1.5 | Q8_0+AudioVAE-F16 | f16 | **0.308** | **0.397** | **0.559** | 2.148 |
+| voxcpm1.5 | F16 | mixed | 0.352 | 0.442 | 0.648 | 1.970 |
+| voxcpm1.5 | F16+AudioVAE-F16 | f16 | 0.347 | 0.438 | 0.655 | **1.885** |
+| voxcpm1.5 | F32 (baseline) | original | 0.414 | 0.503 | 0.686 | 2.305 |
+| voxcpm-0.5b | Q4_K | mixed | 0.401 | 0.442 | **0.550** | 2.067 |
+| voxcpm-0.5b | Q4_K+AudioVAE-F16 | f16 | 0.396 | 0.437 | 0.555 | 1.953 |
+| voxcpm-0.5b | Q8_0 | mixed | 0.430 | 0.470 | 0.623 | **1.644** |
+| voxcpm-0.5b | Q8_0+AudioVAE-F16 | f16 | 0.417 | 0.456 | 0.595 | 1.809 |
+| voxcpm-0.5b | F16 | mixed | **0.390** | **0.428** | 0.567 | 1.678 |
+| voxcpm-0.5b | F16+AudioVAE-F16 | f16 | 0.392 | 0.430 | 0.565 | 1.718 |
+| voxcpm-0.5b | F32 (baseline) | original | 0.500 | 0.539 | 0.680 | 1.903 |
 
 **RTF 定义：**
 - **Model Only**：纯模型推理（prefill + decode loop），不含 AudioVAE
@@ -75,24 +100,52 @@ ctest --output-on-failure
 
 ### 关键发现
 
-1. **Q4_K 表现最佳**：比 F32 快 27-37%，同时节省 83% 存储空间
-2. **F16 反而最慢**：比 F32 慢 2.6-2.8 倍，可能是内存带宽或 SIMD 优化不足
-3. **Q8_0 vs F32**：Q8_0 性能接近或略优于 F32，同时节省 72% 空间
-4. **模型对比**：0.5B 比 1.5B 快约 30-40%，体积减少 18%
+#### CPU
+
+1. **CPU 最优配置现在取决于模型和指标**：`voxcpm1.5 Q4_K+AudioVAE-F16` 在 model-only 和 without-encode 指标上最好，`voxcpm1.5 Q8_0` 在完整流水线指标上最好，而 `voxcpm-0.5b Q4_K` 仍然是整体最稳妥的 CPU 选择。
+2. **1.5B 在 CPU 上明显受益于 AudioVAE-F16**：`Q4_K+AudioVAE-F16` 在 `voxcpm1.5` 上拿到了最好的 `Model Only` 和 `Without Encode` RTF，而 `Q8_0` 拿到了最好的完整流水线 RTF。
+3. **0.5B 的 CPU 最优仍然是 Q4_K**：`voxcpm-0.5b Q4_K` 的整体 CPU RTF 最好，`Q8_0+AudioVAE-F16` 在完整流水线指标上非常接近。
+4. **这台 CPU 上 F32 最慢**：无论是 `voxcpm1.5` 还是 `voxcpm-0.5b`，F32 baseline 都是最慢的 CPU 配置。
+
+#### CUDA
+
+1. **CUDA 明显快于 CPU**：在本轮测试中，完整流水线 RTF 从 CPU 的 `3.83-15.02` 下降到 CUDA 的 `0.55-0.69`。
+2. **CUDA 下最佳配置取决于评价指标**：对 `voxcpm1.5`，`Q8_0+AudioVAE-F16` 的 RTF 最好，而 `F16+AudioVAE-F16` 的总耗时最短；对 `voxcpm-0.5b`，`Q4_K` 的完整流水线 RTF 最好，而 `Q8_0` 的总耗时最短。
+3. **CUDA 不再明显偏爱 Q4_K**：和 CPU 不同，Q4_K 在 CUDA 上并不总是最快，`Q8_0` 和 `F16` 经常同样有竞争力，甚至更好。
+4. **AudioVAE F16 在 CUDA 上有帮助**：把 AudioVAE 强制导出为 `F16` 后，多组 CUDA 测试结果变好，尤其是 `voxcpm1.5 Q8_0` 和 `voxcpm-0.5b Q8_0`。
 
 ### 部署建议
 
 | 场景 | 推荐配置 |
 |------|---------|
-| 生产部署 | **voxcpm-0.5b Q4_K** (477 MB, RTF 2.72) |
-| 平衡精度 | voxcpm1.5 Q4_K (582 MB, RTF 3.91) |
-| 最高精度 | voxcpm1.5 F32 (3392 MB, RTF 4.66) |
-| 避免使用 | F16 量化（最慢且无优势）|
+| 生产部署 | **voxcpm-0.5b Q4_K** (477 MB, RTF 3.609) |
+| 平衡精度 | **voxcpm1.5 Q8_0** (942 MB, RTF 4.291) |
+| 1.5B 离线 prompt 场景 | voxcpm1.5 Q4_K+AudioVAE-F16 (647 MB, Without Encode RTF 2.848) |
+| 最高精度基线 | voxcpm1.5 F32 (3392 MB, RTF 7.494) |
 
-**测试环境：**
-- 平台：Orange Pi 6 Plus
-- SoC：CIX P1 CD8160
-- CPU：12 核 (2x A720 @ 2.6GHz + 6x A720 @ 2.5GHz + 4x A520 @ 1.8GHz)
-- 架构：aarch64，支持 SVE、SVE2、BF16、i8mm
+### CUDA 部署建议
+
+| 场景 | 推荐配置 |
+|------|---------|
+| 最低完整流水线 RTF | **voxcpm-0.5b Q4_K** (477 MB, RTF 0.550) |
+| 1.5B 最佳延迟/RTF 平衡 | **voxcpm1.5 Q8_0+AudioVAE-F16** (984 MB, RTF 0.559) |
+| 1.5B 较小且适合 CUDA 的模型 | voxcpm1.5 Q4_K+AudioVAE-F16 (647 MB, RTF 0.596) |
+| 最高精度基线 | voxcpm1.5 F32 (3392 MB, RTF 0.686) |
+
+**CPU 测试环境：**
+- CPU：12th Gen Intel(R) Core(TM) i5-12600K
 - 线程：8
 - 后端：CPU
+- 基准结果来源：`logs/benchmark_summary_cpu_20260318_092142.txt`
+
+**CUDA 测试环境：**
+- 后端：CUDA
+- GPU：NVIDIA GeForce RTX 4060 Ti
+- CUDA 设备：`CUDA0`
+- Compute capability：8.9
+- CUDA VMM：yes
+- 主机 CPU：12th Gen Intel(R) Core(TM) i5-12600K
+- 线程：8
+- Inference timesteps：10
+- CFG value：2.0
+- 基准结果来源：`logs/benchmark_summary_cuda_20260318_092028.txt`
