@@ -4,7 +4,8 @@
 
 Standalone C++ inference project for VoxCPM models built on top of `ggml`.
 
-VoxCPM Official Repository: https://github.com/OpenBMB/VoxCPM
+- **GGUF Weights**: https://huggingface.co/bluryar/VoxCPM-GGUF
+- VoxCPM Official Repository: https://github.com/OpenBMB/VoxCPM
 
 [中文文档](README_zh.md)
 
