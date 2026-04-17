@@ -546,7 +546,7 @@ enum class BufferUsage {
 - `2026-04-03`: `benchmark_clone_state()` 已不再根据 host completeness 选择预热 host shadow 的创建路径；完整 host shadow clone 现在统一从空 fresh state 按需拷贝，新增测试锁定完整 host shadow 仍可正确保留。
 - `2026-04-02`: `decode` 当前 patch 追加到 `latent_seq` 已切到 d2d 路径，去掉了这一段 `tensor_get -> host vector -> tensor_set` 的回写链。
 - `2026-04-02`: `decode` 在 persistent path 下已不再分配无效 host hidden 向量，也不再写回会立刻被清空或覆盖的 `prefix_feat_cond` host shadow。
-- `2026-04-17`: OpenAI-compatible TTS server 已开始补齐 `response_format=mp3/opus` 的实际编码路径与 SSE `audio.delta` 同格式输出，相关 README / CMake / tests 正在同步收口。
+- `2026-04-17`: OpenAI-compatible TTS server 已完成 `response_format=mp3/opus` 的实际编码与 SSE `audio.delta` 同格式输出；同时在 `/v1/audio/speech` 请求边界加入 runtime/backend reset，修复同一 core/service 的重复请求 `SEGV`，相关 README / CMake / tests / smoke 已收口。
 
 ## 11. 参考文档
 

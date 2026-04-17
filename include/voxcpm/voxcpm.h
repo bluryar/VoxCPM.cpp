@@ -115,6 +115,7 @@ public:
                          VoxCPMBackend& backend);
 
     VoxCPMDecodeState create_decode_state() const;
+    void reset_request_state();
 
     VoxCPMDecodeState prefill(const std::vector<int32_t>& text,
                               const std::vector<int32_t>& text_mask,

@@ -435,6 +435,19 @@ void VoxCPMBackend::init_allocator() {
     }
 }
 
+void VoxCPMBackend::reset_request_state() {
+    graph_scheduler_modes_.clear();
+
+    if (sched_) {
+        ggml_backend_sched_reset(sched_);
+    }
+
+    if (gallocr_) {
+        ggml_gallocr_free(gallocr_);
+        gallocr_ = nullptr;
+    }
+}
+
 void VoxCPMBackend::reserve_compute_memory(ggml_cgraph* graph, const char* stage) {
     const bool use_scheduler = sched_ != nullptr && stage_should_use_scheduler(stage);
     graph_scheduler_modes_[graph] = use_scheduler;

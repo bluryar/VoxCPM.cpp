@@ -114,6 +114,14 @@ public:
     void init_allocator();
 
     /**
+     * @brief Reset request-scoped graph state before a new synthesis request
+     *
+     * Clears graph-pointer bookkeeping and resets allocator/scheduler state so
+     * reused backend instances do not inherit stale request-local graph data.
+     */
+    void reset_request_state();
+
+    /**
      * @brief Reserve compute memory for worst-case graph
      * @param graph Maximum size graph
      * @param stage Optional stage label for allocator debug logs

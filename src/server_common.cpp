@@ -693,6 +693,12 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         fail("retry_badcase_ratio_threshold must be > 0");
     }
 
+    // Request boundary reset: cached runtime graphs and backend graph bookkeeping
+    // are rebuilt per synthesis request so reused service instances do not carry
+    // stale graph state across calls.
+    runtime_.reset_request_state();
+    backend_->reset_request_state();
+
     const bool has_prompt_audio = request.prompt.prompt_audio_length > 0;
     const bool has_reference_audio = request.prompt.reference_audio_length > 0;
     std::string effective_text = request.text;

@@ -195,5 +195,49 @@ TEST_CASE("Service synthesize runs end-to-end with encoded prompt audio", "[serv
     REQUIRE(last_chunk_size > 0);
 }
 
+TEST_CASE("Service synthesize resets request-scoped runtime state between calls", "[server][integration]") {
+    const std::string model_path = get_model_path();
+    REQUIRE(std::filesystem::exists(model_path));
+
+    VoxCPMServiceCore service(model_path, BackendType::CPU, 2);
+    service.load();
+    REQUIRE(service.loaded());
+
+    constexpr int kInputSampleRate = 16000;
+    constexpr float kPi = 3.14159265358979323846f;
+    std::vector<float> mono_audio(1600, 0.0f);
+    for (size_t i = 0; i < mono_audio.size(); ++i) {
+        const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) / static_cast<float>(kInputSampleRate);
+        mono_audio[i] = 0.05f * std::sin(phase);
+    }
+
+    PromptFeatures prompt = service.encode_prompt_audio("voice_repeat", "你好", mono_audio, kInputSampleRate);
+    REQUIRE(prompt.prompt_audio_length > 0);
+    REQUIRE(prompt.sample_rate > 0);
+
+    SynthesisRequest request;
+    request.text = "测试";
+    request.prompt = prompt;
+    request.cfg_value = 1.5f;
+    request.inference_timesteps = 4;
+    request.streaming_prefix_len = 2;
+
+    const SynthesisResult first = service.synthesize(request);
+    const SynthesisResult second = service.synthesize(request);
+
+    REQUIRE(first.sample_rate == service.sample_rate());
+    REQUIRE(second.sample_rate == service.sample_rate());
+    REQUIRE(first.generated_frames > 0);
+    REQUIRE(second.generated_frames > 0);
+    REQUIRE_FALSE(first.waveform.empty());
+    REQUIRE_FALSE(second.waveform.empty());
+    REQUIRE(std::all_of(first.waveform.begin(), first.waveform.end(), [](float value) {
+        return std::isfinite(value);
+    }));
+    REQUIRE(std::all_of(second.waveform.begin(), second.waveform.end(), [](float value) {
+        return std::isfinite(value);
+    }));
+}
+
 }  // namespace test
 }  // namespace voxcpm

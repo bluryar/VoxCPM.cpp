@@ -304,6 +304,10 @@ bool VoxCPMRuntime::load_from_store(const std::shared_ptr<VoxCPMWeightStore>& st
     return true;
 }
 
+void VoxCPMRuntime::reset_request_state() {
+    clear_cached_graphs();
+}
+
 void VoxCPMRuntime::maybe_collect_graph(ggml_cgraph* graph) {
     if (imatrix_collector_ && backend_ && graph) {
         imatrix_collector_->observe_graph(graph, *backend_);
