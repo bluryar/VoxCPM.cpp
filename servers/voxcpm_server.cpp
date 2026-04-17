@@ -382,6 +382,16 @@ int main(int argc, char** argv) {
                 const json body = json::parse(req.body);
                 const RequestContext ctx = parse_request(body, options);
 
+                if (!audio_response_format_supported(ctx.format)) {
+                    respond_error(res,
+                                  501,
+                                  std::string("this build does not include ") + audio_response_format_name(ctx.format) +
+                                      " encoder support",
+                                  "server_error",
+                                  "not_implemented");
+                    return;
+                }
+
                 const auto permit = queue.acquire();
                 if (!permit.has_value()) {
                     respond_error(res, 503, "Synthesis queue is full.", "server_error", "queue_full");

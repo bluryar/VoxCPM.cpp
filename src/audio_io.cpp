@@ -5,7 +5,21 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <sstream>
 #include <stdexcept>
+
+#ifndef VOXCPM_ENABLE_MP3
+#define VOXCPM_ENABLE_MP3 1
+#endif
+
+#ifndef VOXCPM_ENABLE_OPUS
+#define VOXCPM_ENABLE_OPUS 1
+#endif
 
 namespace voxcpm {
 
@@ -17,6 +31,151 @@ struct MemoryWriter {
 
 void fail_audio(const std::string& message) {
     throw std::runtime_error(message);
+}
+
+std::string shell_quote(const std::filesystem::path& path) {
+    std::string quoted = "'";
+    const std::string raw = path.string();
+    for (char ch : raw) {
+        if (ch == '\'') {
+            quoted += "'\"'\"'";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+}
+
+std::filesystem::path make_temp_codec_path(const char* suffix) {
+    const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    std::random_device rd;
+    std::mt19937_64 rng((static_cast<uint64_t>(rd()) << 32) ^ static_cast<uint64_t>(stamp));
+    std::uniform_int_distribution<uint64_t> dist;
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    return base / ("voxcpm-audio-" + std::to_string(stamp) + "-" + std::to_string(dist(rng)) + suffix);
+}
+
+std::vector<uint8_t> read_binary_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in.is_open()) {
+        fail_audio("Failed to read encoded audio payload: " + path.string());
+    }
+
+    const std::streamsize size = in.tellg();
+    if (size < 0) {
+        fail_audio("Failed to read encoded audio payload: " + path.string());
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(size), 0);
+    in.seekg(0, std::ios::beg);
+    if (size > 0) {
+        in.read(reinterpret_cast<char*>(bytes.data()), size);
+    }
+    return bytes;
+}
+
+std::vector<uint8_t> write_wav_or_pcm_bytes(const std::vector<float>& waveform) {
+    std::vector<uint8_t> bytes(waveform.size() * sizeof(int16_t), 0);
+    for (size_t i = 0; i < waveform.size(); ++i) {
+        const float clamped = std::max(-1.0f, std::min(1.0f, waveform[i]));
+        const int16_t pcm = static_cast<int16_t>(std::lrint(clamped * 32767.0f));
+        std::memcpy(bytes.data() + i * sizeof(int16_t), &pcm, sizeof(pcm));
+    }
+    return bytes;
+}
+
+std::vector<uint8_t> encode_ogg_opus_via_ffmpeg(const std::vector<float>& waveform, int sample_rate) {
+    if (sample_rate <= 0) {
+        fail_audio("Invalid sample rate for opus encoding");
+    }
+
+    const std::filesystem::path input_path = make_temp_codec_path(".pcm");
+    const std::filesystem::path output_path = make_temp_codec_path(".opus");
+
+    struct Cleanup {
+        std::filesystem::path input;
+        std::filesystem::path output;
+        ~Cleanup() {
+            std::error_code ec;
+            if (!input.empty()) {
+                std::filesystem::remove(input, ec);
+            }
+            if (!output.empty()) {
+                std::filesystem::remove(output, ec);
+            }
+        }
+    } cleanup{input_path, output_path};
+
+    {
+        std::ofstream out(input_path, std::ios::binary);
+        if (!out.is_open()) {
+            fail_audio("Failed to stage pcm input for opus encoding");
+        }
+        const std::vector<uint8_t> pcm_bytes = write_wav_or_pcm_bytes(waveform);
+        if (!pcm_bytes.empty()) {
+            out.write(reinterpret_cast<const char*>(pcm_bytes.data()), static_cast<std::streamsize>(pcm_bytes.size()));
+        }
+    }
+
+    std::ostringstream command;
+    command << "ffmpeg -hide_banner -loglevel error -y"
+            << " -f s16le -ar " << sample_rate << " -ac 1"
+            << " -i " << shell_quote(input_path)
+            << " -c:a libopus -application audio -vbr on -b:a 96k -f ogg "
+            << shell_quote(output_path);
+    const int rc = std::system(command.str().c_str());
+    if (rc != 0) {
+        fail_audio("Failed to encode audio as opus");
+    }
+
+    return read_binary_file(output_path);
+}
+
+std::vector<uint8_t> encode_mp3_via_ffmpeg(const std::vector<float>& waveform, int sample_rate) {
+    if (sample_rate <= 0) {
+        fail_audio("Invalid sample rate for mp3 encoding");
+    }
+
+    const std::filesystem::path input_path = make_temp_codec_path(".pcm");
+    const std::filesystem::path output_path = make_temp_codec_path(".mp3");
+
+    struct Cleanup {
+        std::filesystem::path input;
+        std::filesystem::path output;
+        ~Cleanup() {
+            std::error_code ec;
+            if (!input.empty()) {
+                std::filesystem::remove(input, ec);
+            }
+            if (!output.empty()) {
+                std::filesystem::remove(output, ec);
+            }
+        }
+    } cleanup{input_path, output_path};
+
+    {
+        std::ofstream out(input_path, std::ios::binary);
+        if (!out.is_open()) {
+            fail_audio("Failed to stage pcm input for mp3 encoding");
+        }
+        const std::vector<uint8_t> pcm_bytes = write_wav_or_pcm_bytes(waveform);
+        if (!pcm_bytes.empty()) {
+            out.write(reinterpret_cast<const char*>(pcm_bytes.data()), static_cast<std::streamsize>(pcm_bytes.size()));
+        }
+    }
+
+    std::ostringstream command;
+    command << "ffmpeg -hide_banner -loglevel error -y"
+            << " -f s16le -ar " << sample_rate << " -ac 1"
+            << " -i " << shell_quote(input_path)
+            << " -c:a libmp3lame -b:a 128k -f mp3 "
+            << shell_quote(output_path);
+    const int rc = std::system(command.str().c_str());
+    if (rc != 0) {
+        fail_audio("Failed to encode audio as mp3");
+    }
+
+    return read_binary_file(output_path);
 }
 
 ma_result encoder_write(ma_encoder* encoder, const void* pBufferIn, size_t bytesToWrite, size_t* pBytesWritten) {
@@ -65,11 +224,12 @@ ma_encoding_format to_ma_encoding_format(AudioResponseFormat format) {
 }
 
 std::vector<uint8_t> encode_pcm16_wav(const std::vector<float>& waveform, int sample_rate) {
+    const std::vector<uint8_t> pcm_bytes = write_wav_or_pcm_bytes(waveform);
     const uint16_t channels = 1;
     const uint16_t bits_per_sample = 16;
     const uint32_t byte_rate = static_cast<uint32_t>(sample_rate) * channels * (bits_per_sample / 8);
     const uint16_t block_align = channels * (bits_per_sample / 8);
-    const uint32_t data_size = static_cast<uint32_t>(waveform.size() * sizeof(int16_t));
+    const uint32_t data_size = static_cast<uint32_t>(pcm_bytes.size());
     const uint32_t riff_size = 36 + data_size;
 
     std::vector<uint8_t> bytes;
@@ -96,12 +256,7 @@ std::vector<uint8_t> encode_pcm16_wav(const std::vector<float>& waveform, int sa
     append_bytes(&bits_per_sample, sizeof(bits_per_sample));
     append_bytes("data", 4);
     append_bytes(&data_size, sizeof(data_size));
-
-    for (float sample : waveform) {
-        const float clamped = std::max(-1.0f, std::min(1.0f, sample));
-        const int16_t pcm = static_cast<int16_t>(std::lrint(clamped * 32767.0f));
-        append_bytes(&pcm, sizeof(pcm));
-    }
+    bytes.insert(bytes.end(), pcm_bytes.begin(), pcm_bytes.end());
 
     return bytes;
 }
@@ -252,16 +407,18 @@ std::vector<float> resample_audio_linear(const std::vector<float>& input, double
 
 AudioResponseFormat parse_audio_response_format(const std::string& format) {
     if (format == "mp3" || format.empty()) return AudioResponseFormat::Mp3;
+    if (format == "opus") return AudioResponseFormat::Opus;
     if (format == "flac") return AudioResponseFormat::Flac;
     if (format == "wav") return AudioResponseFormat::Wav;
     if (format == "pcm") return AudioResponseFormat::Pcm;
-    fail_audio("Unsupported response_format: " + format + " (supported: mp3, flac, wav, pcm)");
+    fail_audio("Unsupported response_format: " + format + " (supported: mp3, opus, flac, wav, pcm)");
     return AudioResponseFormat::Mp3;
 }
 
 const char* audio_response_format_name(AudioResponseFormat format) {
     switch (format) {
         case AudioResponseFormat::Mp3: return "mp3";
+        case AudioResponseFormat::Opus: return "opus";
         case AudioResponseFormat::Flac: return "flac";
         case AudioResponseFormat::Wav: return "wav";
         case AudioResponseFormat::Pcm: return "pcm";
@@ -272,10 +429,26 @@ const char* audio_response_format_name(AudioResponseFormat format) {
 const char* audio_content_type(AudioResponseFormat format) {
     switch (format) {
         case AudioResponseFormat::Mp3: return "audio/mpeg";
+        case AudioResponseFormat::Opus: return "audio/ogg; codecs=opus";
         case AudioResponseFormat::Flac: return "audio/flac";
         case AudioResponseFormat::Wav: return "audio/wav";
         case AudioResponseFormat::Pcm: return "application/octet-stream";
         default: return "application/octet-stream";
+    }
+}
+
+bool audio_response_format_supported(AudioResponseFormat format) {
+    switch (format) {
+        case AudioResponseFormat::Mp3:
+            return VOXCPM_ENABLE_MP3 != 0;
+        case AudioResponseFormat::Opus:
+            return VOXCPM_ENABLE_OPUS != 0;
+        case AudioResponseFormat::Flac:
+        case AudioResponseFormat::Wav:
+        case AudioResponseFormat::Pcm:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -287,13 +460,16 @@ std::vector<uint8_t> encode_audio(AudioResponseFormat format,
     }
 
     if (format == AudioResponseFormat::Pcm) {
-        std::vector<uint8_t> bytes(waveform.size() * sizeof(int16_t), 0);
-        for (size_t i = 0; i < waveform.size(); ++i) {
-            const float clamped = std::max(-1.0f, std::min(1.0f, waveform[i]));
-            const int16_t pcm = static_cast<int16_t>(std::lrint(clamped * 32767.0f));
-            std::memcpy(bytes.data() + i * sizeof(int16_t), &pcm, sizeof(int16_t));
-        }
-        return bytes;
+        return write_wav_or_pcm_bytes(waveform);
+    }
+
+    if (!audio_response_format_supported(format)) {
+        fail_audio(std::string("this build does not include ") + audio_response_format_name(format) +
+                   " encoder support");
+    }
+
+    if (format == AudioResponseFormat::Opus) {
+        return encode_ogg_opus_via_ffmpeg(waveform, sample_rate);
     }
 
     const ma_encoding_format ma_format = to_ma_encoding_format(format);
@@ -306,11 +482,18 @@ std::vector<uint8_t> encode_audio(AudioResponseFormat format,
     ma_encoder_config config = ma_encoder_config_init(ma_format, ma_format_f32, 1, static_cast<ma_uint32>(sample_rate));
     ma_encoder encoder;
     if (ma_encoder_init(encoder_write, encoder_seek, &writer, &config, &encoder) != MA_SUCCESS) {
+        // Some miniaudio builds expose MP3 decoding without a working MP3 encoder, so keep a fallback.
+        if (format == AudioResponseFormat::Mp3) {
+            return encode_mp3_via_ffmpeg(waveform, sample_rate);
+        }
         fail_audio(std::string("Failed to initialize encoder for format ") + audio_response_format_name(format));
     }
 
     if (ma_encoder_write_pcm_frames(&encoder, waveform.data(), waveform.size(), nullptr) != MA_SUCCESS) {
         ma_encoder_uninit(&encoder);
+        if (format == AudioResponseFormat::Mp3) {
+            return encode_mp3_via_ffmpeg(waveform, sample_rate);
+        }
         fail_audio(std::string("Failed to encode audio as ") + audio_response_format_name(format));
     }
     ma_encoder_uninit(&encoder);

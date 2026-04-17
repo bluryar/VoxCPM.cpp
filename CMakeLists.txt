@@ -39,10 +39,18 @@ option(VOXCPM_BUILD_EXAMPLES "Build example binaries" ON)
 option(VOXCPM_BUILD_BENCHMARK "Build benchmark binaries" ON)
 option(VOXCPM_BUILD_TESTS "Build tests" ON)
 option(VOXCPM_BUILD_WASM "Build the Emscripten WASM target" OFF)
+option(VOXCPM_ENABLE_MP3 "Enable MP3 response_format support" ON)
+option(VOXCPM_ENABLE_OPUS "Enable Opus response_format support via ffmpeg fallback" ON)
 
 # =============================================================================
 # Dependencies
 # =============================================================================
+
+find_program(VOXCPM_FFMPEG_EXECUTABLE ffmpeg)
+if(VOXCPM_ENABLE_OPUS AND NOT VOXCPM_FFMPEG_EXECUTABLE)
+    message(WARNING "ffmpeg was not found; disabling VOXCPM_ENABLE_OPUS")
+    set(VOXCPM_ENABLE_OPUS OFF)
+endif()
 
 # GGML
 set(GGML_DIR ${CMAKE_SOURCE_DIR}/third_party/ggml)
@@ -110,6 +118,9 @@ target_link_libraries(voxcpm
 )
 
 target_compile_definitions(voxcpm
+    PUBLIC
+        VOXCPM_ENABLE_MP3=$<IF:$<BOOL:${VOXCPM_ENABLE_MP3}>,1,0>
+        VOXCPM_ENABLE_OPUS=$<IF:$<BOOL:${VOXCPM_ENABLE_OPUS}>,1,0>
     PRIVATE
         $<$<CONFIG:Debug>:VOXCPM_DEBUG>
 )

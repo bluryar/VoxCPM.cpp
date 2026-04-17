@@ -213,7 +213,8 @@ JSON 请求字段：
 - `voice`：必填
   - 可以直接传字符串 voice id，例如 `"taiyi"`
   - 也可以传对象形式 `{ "id": "taiyi" }`
-- `response_format`：可选，目前仅支持 `wav`
+- `response_format`：可选，默认 `mp3`
+  - 支持 `mp3`、`opus`、`flac`、`wav`、`pcm`
 - `speed`：可选浮点数，范围 `0.25` 到 `4.0`
 - `stream_format`：可选，支持 `audio` 或 `sse`
 - `instructions`：为兼容接口而保留，但只要传非空值目前就会报错
@@ -225,6 +226,7 @@ JSON 请求字段：
   - `Content-Type` 与 `response_format` 对应
 - `stream_format=sse`：
   - 返回 `text/event-stream`
+  - 每个 `audio.delta` 事件都包含一个按请求格式编码好的独立音频片段
   - 发送：
     - `event: audio.delta`
     - `event: audio.completed`
@@ -235,10 +237,27 @@ JSON 请求字段：
 - 额外请求进入等待队列，长度由 `--max-queue` 控制
 - 队列满时返回 `503`
 
-当前 `response_format` 仅支持 `wav`。
-`mp3`、`flac`、`pcm` 等其他格式暂不支持，因为尚未选定合适的轻量级编码方案。
+输出格式：
 
-- `wav`
+- `mp3`：`audio/mpeg`
+- `opus`：`audio/ogg; codecs=opus`
+- `flac`：`audio/flac`
+- `wav`：`audio/wav`
+- `pcm`：`application/octet-stream`
+
+构建选项：
+
+- `VOXCPM_ENABLE_MP3=ON|OFF`
+  - 控制 MP3 支持
+  - 运行时会优先尝试原生编码器，初始化失败时再回退到 `ffmpeg`
+- `VOXCPM_ENABLE_OPUS=ON|OFF`
+  - 控制 Opus 路径，启用后会使用 Ogg Opus 的 `ffmpeg` fallback
+  - 如果配置 CMake 时找不到 `ffmpeg`，会自动关闭该支持，`response_format=opus` 请求返回 `501`
+
+输出示例：
+
+- `speech.mp3`
+- `speech.opus`
 
 ### 构建
 
@@ -261,6 +280,16 @@ cmake --build build-cuda -j8
 cmake -B build -DVOXCPM_BUILD_BENCHMARK=OFF -DVOXCPM_BUILD_TESTS=OFF
 cmake --build build -j8
 ```
+
+如果想显式控制音频编码支持，可以再加上：
+
+```bash
+cmake -B build -DVOXCPM_BUILD_BENCHMARK=OFF -DVOXCPM_BUILD_TESTS=OFF \
+  -DVOXCPM_ENABLE_MP3=ON \
+  -DVOXCPM_ENABLE_OPUS=ON
+```
+
+这两个选项默认都是 `ON`。
 
 ### 启动服务
 
@@ -336,13 +365,45 @@ curl -X POST http://127.0.0.1:8080/v1/audio/speech \
   --output ./voxcpm_taiyi.wav
 ```
 
+MP3 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voxcpm-1.5",
+    "input": "大家好，我现在正在大可奇奇体验AI科技。",
+    "voice": "taiyi",
+    "response_format": "mp3",
+    "stream_format": "audio"
+  }' \
+  --output ./voxcpm_taiyi.mp3
+```
+
+Opus 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voxcpm-1.5",
+    "input": "大家好，我现在正在大可奇奇体验AI科技。",
+    "voice": "taiyi",
+    "response_format": "opus",
+    "stream_format": "sse"
+  }' \
+  --output ./voxcpm_taiyi.opus
+```
+
 ### 说明
 
 - `voice` 字段当前直接传已注册的 voice id，例如 `"taiyi"`。
 - `instructions` 为兼容 OpenAI 请求体而保留，但 VoxCPM v1 还未实现。
-- `stream_format` 支持 `audio` 和 `sse`。
+- `stream_format` 支持 `audio` 和 `sse`；`audio.delta` 的 `format` 字段和实际字节内容会与非流式路径一致。
+- `opus` 输出是 Ogg Opus 容器，不是裸 Opus packet。
 - 如果你只需要本地离线推理，`examples/voxcpm_tts` 仍然是最简单的入口。
 - 如果启用了鉴权，上面所有接口都需要带 `Authorization: Bearer <api-key>`。
+- 如果请求了构建时禁用的编码器，服务器会返回 `501`，例如 `this build does not include opus encoder support`。
 - 错误返回格式如下：
 
 ```json

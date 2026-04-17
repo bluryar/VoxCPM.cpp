@@ -9,6 +9,7 @@ namespace voxcpm {
 
 enum class AudioResponseFormat {
     Mp3,
+    Opus,
     Flac,
     Wav,
     Pcm,
@@ -32,6 +33,7 @@ std::vector<float> trim_audio_silence_vad(const std::vector<float>& input,
 AudioResponseFormat parse_audio_response_format(const std::string& format);
 const char* audio_response_format_name(AudioResponseFormat format);
 const char* audio_content_type(AudioResponseFormat format);
+bool audio_response_format_supported(AudioResponseFormat format);
 
 std::vector<uint8_t> encode_audio(AudioResponseFormat format,
                                   const std::vector<float>& waveform,

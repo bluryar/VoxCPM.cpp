@@ -14,12 +14,73 @@ namespace test {
 
 TEST_CASE("Audio response format parser supports the documented formats", "[server]") {
     REQUIRE(parse_audio_response_format("mp3") == AudioResponseFormat::Mp3);
+    REQUIRE(parse_audio_response_format("opus") == AudioResponseFormat::Opus);
     REQUIRE(parse_audio_response_format("flac") == AudioResponseFormat::Flac);
     REQUIRE(parse_audio_response_format("wav") == AudioResponseFormat::Wav);
     REQUIRE(parse_audio_response_format("pcm") == AudioResponseFormat::Pcm);
-    REQUIRE_THROWS(parse_audio_response_format("opus"));
     REQUIRE_THROWS(parse_audio_response_format("aac"));
     REQUIRE_THROWS(parse_audio_response_format("bogus"));
+}
+
+TEST_CASE("Audio response format metadata matches the runtime encoders", "[server]") {
+    REQUIRE(audio_response_format_name(AudioResponseFormat::Mp3) == std::string("mp3"));
+    REQUIRE(audio_response_format_name(AudioResponseFormat::Opus) == std::string("opus"));
+    REQUIRE(audio_response_format_name(AudioResponseFormat::Flac) == std::string("flac"));
+    REQUIRE(audio_response_format_name(AudioResponseFormat::Wav) == std::string("wav"));
+    REQUIRE(audio_response_format_name(AudioResponseFormat::Pcm) == std::string("pcm"));
+
+    REQUIRE(audio_content_type(AudioResponseFormat::Mp3) == std::string("audio/mpeg"));
+    REQUIRE(audio_content_type(AudioResponseFormat::Opus) == std::string("audio/ogg; codecs=opus"));
+    REQUIRE(audio_content_type(AudioResponseFormat::Flac) == std::string("audio/flac"));
+    REQUIRE(audio_content_type(AudioResponseFormat::Wav) == std::string("audio/wav"));
+    REQUIRE(audio_content_type(AudioResponseFormat::Pcm) == std::string("application/octet-stream"));
+
+    REQUIRE(audio_response_format_supported(AudioResponseFormat::Wav));
+    REQUIRE(audio_response_format_supported(AudioResponseFormat::Pcm));
+    REQUIRE(audio_response_format_supported(AudioResponseFormat::Flac));
+
+#if VOXCPM_ENABLE_MP3
+    REQUIRE(audio_response_format_supported(AudioResponseFormat::Mp3));
+#else
+    REQUIRE_FALSE(audio_response_format_supported(AudioResponseFormat::Mp3));
+#endif
+
+#if VOXCPM_ENABLE_OPUS
+    REQUIRE(audio_response_format_supported(AudioResponseFormat::Opus));
+#else
+    REQUIRE_FALSE(audio_response_format_supported(AudioResponseFormat::Opus));
+#endif
+}
+
+TEST_CASE("Audio encoder produces playable payloads for mp3, opus, wav, and pcm", "[server]") {
+    constexpr int kSampleRate = 24000;
+    constexpr float kPi = 3.14159265358979323846f;
+    std::vector<float> waveform(480, 0.0f);
+    for (size_t i = 0; i < waveform.size(); ++i) {
+        waveform[i] = 0.1f * std::sin(2.0f * kPi * 220.0f * static_cast<float>(i) / static_cast<float>(kSampleRate));
+    }
+
+    const std::vector<uint8_t> wav = encode_audio(AudioResponseFormat::Wav, waveform, kSampleRate);
+    REQUIRE(wav.size() > 44);
+    REQUIRE(std::equal(wav.begin(), wav.begin() + 4, "RIFF"));
+
+    const std::vector<uint8_t> pcm = encode_audio(AudioResponseFormat::Pcm, waveform, kSampleRate);
+    REQUIRE(pcm.size() == waveform.size() * sizeof(int16_t));
+
+#if VOXCPM_ENABLE_MP3
+    const std::vector<uint8_t> mp3 = encode_audio(AudioResponseFormat::Mp3, waveform, kSampleRate);
+    REQUIRE(mp3.size() > 0);
+    REQUIRE(mp3.size() >= 3);
+    REQUIRE((std::equal(mp3.begin(), mp3.begin() + 3, "ID3") || (mp3[0] == 0xFF && (mp3[1] & 0xE0) == 0xE0)));
+#endif
+
+#if VOXCPM_ENABLE_OPUS
+    const std::vector<uint8_t> opus = encode_audio(AudioResponseFormat::Opus, waveform, kSampleRate);
+    REQUIRE(opus.size() > 0);
+    REQUIRE(opus.size() >= 8);
+    REQUIRE(std::equal(opus.begin(), opus.begin() + 4, "OggS"));
+    REQUIRE(std::search(opus.begin(), opus.end(), "OpusHead", "OpusHead" + 8) != opus.end());
+#endif
 }
 
 TEST_CASE("Voice ids are restricted to filesystem-safe characters", "[server]") {

@@ -213,7 +213,8 @@ JSON request fields:
 - `voice`: required
   - string voice id, for example `"taiyi"`
   - or object form `{ "id": "taiyi" }`
-- `response_format`: optional, currently only `wav` is supported
+- `response_format`: optional, defaults to `mp3`
+  - supported values: `mp3`, `opus`, `flac`, `wav`, `pcm`
 - `speed`: optional float, range `0.25` to `4.0`
 - `stream_format`: optional, `audio` or `sse`
 - `instructions`: accepted for compatibility, but non-empty values currently return an error
@@ -225,6 +226,7 @@ Response behavior:
   - `Content-Type` matches `response_format`
 - `stream_format=sse`:
   - returns `text/event-stream`
+  - each `audio.delta` event contains a self-contained chunk encoded with the requested `response_format`
   - emits:
     - `event: audio.delta`
     - `event: audio.completed`
@@ -235,10 +237,27 @@ Queue behavior:
 - additional requests wait in a bounded queue controlled by `--max-queue`
 - when the queue is full, the server returns `503`
 
-The server currently supports only `wav` for `response_format`.
-Other formats such as `mp3`, `flac`, and `pcm` are not supported yet because a suitable lightweight encoding path has not been selected.
+Supported output formats:
 
-- `wav`
+- `mp3`: `audio/mpeg`
+- `opus`: `audio/ogg; codecs=opus`
+- `flac`: `audio/flac`
+- `wav`: `audio/wav`
+- `pcm`: `application/octet-stream`
+
+Build-time support:
+
+- `VOXCPM_ENABLE_MP3=ON|OFF`
+  - toggles MP3 support
+  - the runtime tries the native encoder first and falls back to `ffmpeg` if that path cannot initialize
+- `VOXCPM_ENABLE_OPUS=ON|OFF`
+  - toggles the Opus path, which uses an Ogg Opus `ffmpeg` fallback when enabled
+  - if `ffmpeg` is unavailable when CMake configures the build, support is disabled and `/v1/audio/speech` returns `501` for `response_format=opus`
+
+Example outputs:
+
+- `speech.mp3`
+- `speech.opus`
 
 ### Build
 
@@ -261,6 +280,16 @@ If you want `--backend cpu`, a normal CPU build is enough:
 cmake -B build -DVOXCPM_BUILD_BENCHMARK=OFF -DVOXCPM_BUILD_TESTS=OFF
 cmake --build build -j8
 ```
+
+If you want to explicitly control audio encoder support, add:
+
+```bash
+cmake -B build -DVOXCPM_BUILD_BENCHMARK=OFF -DVOXCPM_BUILD_TESTS=OFF \
+  -DVOXCPM_ENABLE_MP3=ON \
+  -DVOXCPM_ENABLE_OPUS=ON
+```
+
+These options default to `ON`.
 
 ### Start The Server
 
@@ -336,13 +365,47 @@ curl -X POST http://127.0.0.1:8080/v1/audio/speech \
   --output ./voxcpm_taiyi.wav
 ```
 
+MP3 example:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voxcpm-1.5",
+    "input": "大家好，我现在正在大可奇奇体验AI科技。",
+    "voice": "taiyi",
+    "response_format": "mp3",
+    "stream_format": "audio"
+  }' \
+  --output ./voxcpm_taiyi.mp3
+```
+
+Opus example:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voxcpm-1.5",
+    "input": "大家好，我现在正在大可奇奇体验AI科技。",
+    "voice": "taiyi",
+    "response_format": "opus",
+    "stream_format": "audio"
+  }' \
+  --output ./voxcpm_taiyi.opus
+```
+
 ### Notes
 
 - The current server accepts a voice id string such as `"taiyi"` in the `voice` field.
 - `instructions` is accepted for compatibility but is not implemented in VoxCPM v1.
-- `stream_format` supports `audio` and `sse`.
+- `stream_format` supports `audio` and `sse`; `audio.delta` events carry the same encoded bytes and `format` value as the non-streaming path.
+- `opus` is emitted as an Ogg Opus container, not a raw Opus packet stream.
+- If you run the server under systemd, `CUDA_VISIBLE_DEVICES` only controls GPU visibility.
+  It does not change `response_format`, MIME type selection, or which audio encoder is used.
 - If you only want local offline inference, `examples/voxcpm_tts` is still the simplest entry point.
 - When auth is enabled, every API route above requires `Authorization: Bearer <api-key>`.
+- If a request asks for an encoder that was disabled at build time, the server returns `501` with a message such as `this build does not include opus encoder support`.
 - Error responses use the shape:
 
 ```json
