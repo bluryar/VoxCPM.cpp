@@ -49,8 +49,9 @@ public:
      * @param type Context type
      * @param n_tensors Expected number of tensors
      * @param max_nodes Maximum graph nodes (for Graph type)
+     * @param extra_mem_size Additional metadata headroom for known-large graphs
      */
-    VoxCPMContext(ContextType type, int n_tensors, int max_nodes = 0);
+    VoxCPMContext(ContextType type, int n_tensors, int max_nodes = 0, size_t extra_mem_size = 0);
 
     ~VoxCPMContext();
 

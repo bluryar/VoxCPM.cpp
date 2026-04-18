@@ -23,6 +23,16 @@ VoxCPMContext make_graph_ctx(int n_tensors, int max_nodes) {
     return VoxCPMContext(ContextType::Graph, n_tensors, max_nodes);
 }
 
+VoxCPMContext make_sequence_graph_ctx(int seq_len, int min_tensors, int min_nodes) {
+    constexpr size_t kSequenceGraphHeadroomBytes = 16 * 1024 * 1024;
+    const int safe_seq_len = std::max(0, seq_len);
+    // Seq-dependent graphs can land slightly short when ggml expands internal
+    // bookkeeping for attention/rope-heavy paths, so keep a fixed cushion.
+    const int n_tensors = min_tensors + safe_seq_len * 64 + 1024;
+    const int max_nodes = min_nodes + safe_seq_len * 256 + 8192;
+    return VoxCPMContext(ContextType::Graph, n_tensors, max_nodes, kSequenceGraphHeadroomBytes);
+}
+
 std::string decode_graph_key(int n_timesteps, float cfg_value) {
     uint32_t cfg_bits = 0;
     static_assert(sizeof(cfg_bits) == sizeof(cfg_value), "float size mismatch");
@@ -423,7 +433,8 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_locenc_sequence_graph(int seq_len) {
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 65536, 524288);
+    cached.context = std::make_unique<VoxCPMContext>(
+        make_sequence_graph_ctx(seq_len, 4096, 32768));
     VoxCPMContext& graph_ctx = *cached.context;
     cached.input0 = graph_ctx.new_tensor_3d(GGML_TYPE_F32, config_.feat_dim, config_.patch_size, seq_len);
     ggml_set_input(cached.input0);
@@ -473,7 +484,8 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_embedding_masked_locenc_sequence_to_lm_
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 65536, 524288);
+    cached.context = std::make_unique<VoxCPMContext>(
+        make_sequence_graph_ctx(seq_len, 65536, 524288));
     VoxCPMContext& graph_ctx = *cached.context;
     ggml_context* raw = graph_ctx.raw_context();
 
@@ -590,7 +602,7 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_enc_to_lm_projection_graph(int seq_len)
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 4096, 32768);
+    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 65536, 524288);
     VoxCPMContext& graph_ctx = *cached.context;
     cached.input0 = graph_ctx.new_tensor_2d(GGML_TYPE_F32, feat_encoder_.config().hidden_size, seq_len);
     ggml_set_input(cached.input0);
@@ -614,7 +626,7 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_masked_fsq_blend_graph(int seq_len) {
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 16384, 131072);
+    cached.context = std::make_unique<VoxCPMContext>(make_sequence_graph_ctx(seq_len, 16384, 131072));
     VoxCPMContext& graph_ctx = *cached.context;
     ggml_context* raw = graph_ctx.raw_context();
 
@@ -679,7 +691,7 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_fsq_2d_graph(int seq_len) {
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 8192, 65536);
+    cached.context = std::make_unique<VoxCPMContext>(make_sequence_graph_ctx(seq_len, 8192, 65536));
     VoxCPMContext& graph_ctx = *cached.context;
     cached.input0 = graph_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_set_input(cached.input0);
@@ -704,7 +716,7 @@ VoxCPMCachedGraph& VoxCPMRuntime::ensure_enc_to_lm_projection_fsq_graph(int seq_
     }
 
     cached.clear();
-    cached.context = std::make_unique<VoxCPMContext>(ContextType::Graph, 8192, 65536);
+    cached.context = std::make_unique<VoxCPMContext>(make_sequence_graph_ctx(seq_len, 8192, 65536));
     VoxCPMContext& graph_ctx = *cached.context;
     cached.input0 = graph_ctx.new_tensor_2d(GGML_TYPE_F32, feat_encoder_.config().hidden_size, seq_len);
     ggml_set_input(cached.input0);
@@ -1443,7 +1455,7 @@ std::pair<std::vector<float>, std::vector<float>> VoxCPMRuntime::run_prefill_bas
     VOXCPM_ASSERT(static_cast<int>(text_mask.size()) == seq_len);
     VOXCPM_ASSERT(static_cast<int>(feat_mask.size()) == seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(65536, 524288);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 65536, 524288);
     ggml_context* raw = graph_ctx.raw_context();
     ggml_tensor* embed_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_tensor* text_mask_tensor = graph_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
@@ -1499,7 +1511,7 @@ std::vector<float> VoxCPMRuntime::run_prefill_base_to_residual_inputs_from_tenso
     VOXCPM_ASSERT(static_cast<int>(text_mask.size()) == seq_len);
     VOXCPM_ASSERT(static_cast<int>(feat_mask.size()) == seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(65536, 524288);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 65536, 524288);
     ggml_context* raw = graph_ctx.raw_context();
     ggml_tensor* embed_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_tensor* text_mask_tensor = graph_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
@@ -1562,7 +1574,7 @@ void VoxCPMRuntime::run_prefill_hidden_states_from_tensor_into(ggml_tensor* comb
     VOXCPM_ASSERT(seq_len > 0);
     VOXCPM_ASSERT(static_cast<int>(ggml_nelements(combined_embed_src)) == base_lm_.config().hidden_size * seq_len);
 
-    VoxCPMContext base_ctx = make_graph_ctx(65536, 524288);
+    VoxCPMContext base_ctx = make_sequence_graph_ctx(seq_len, 65536, 524288);
     ggml_context* base_raw = base_ctx.raw_context();
     ggml_tensor* embed_tensor = base_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_tensor* text_mask_tensor = base_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
@@ -1603,7 +1615,7 @@ void VoxCPMRuntime::run_prefill_hidden_states_from_tensor_into(ggml_tensor* comb
     maybe_collect_graph(base_graph);
     backend_->tensor_copy(blended_last_copy, lm_hidden_dst);
 
-    VoxCPMContext residual_ctx = make_graph_ctx(32768, 262144);
+    VoxCPMContext residual_ctx = make_sequence_graph_ctx(seq_len, 32768, 262144);
     ggml_context* residual_raw = residual_ctx.raw_context();
     ggml_tensor* residual_input_tensor =
         residual_ctx.new_tensor_2d(GGML_TYPE_F32, residual_lm_.config().hidden_size, seq_len);
@@ -1651,7 +1663,7 @@ void VoxCPMRuntime::run_prefill_hidden_states_from_input_tensors_into(ggml_tenso
     VOXCPM_ASSERT(static_cast<int>(ggml_nelements(text_mask_src)) == seq_len);
     VOXCPM_ASSERT(static_cast<int>(ggml_nelements(feat_mask_src)) == seq_len);
 
-    VoxCPMContext base_ctx = make_graph_ctx(65536, 524288);
+    VoxCPMContext base_ctx = make_sequence_graph_ctx(seq_len, 65536, 524288);
     ggml_context* base_raw = base_ctx.raw_context();
     ggml_tensor* embed_tensor = base_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_tensor* text_mask_tensor = base_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
@@ -1692,7 +1704,7 @@ void VoxCPMRuntime::run_prefill_hidden_states_from_input_tensors_into(ggml_tenso
     maybe_collect_graph(base_graph);
     backend_->tensor_copy(blended_last_copy, lm_hidden_dst);
 
-    VoxCPMContext residual_ctx = make_graph_ctx(32768, 262144);
+    VoxCPMContext residual_ctx = make_sequence_graph_ctx(seq_len, 32768, 262144);
     ggml_context* residual_raw = residual_ctx.raw_context();
     ggml_tensor* residual_input_tensor =
         residual_ctx.new_tensor_2d(GGML_TYPE_F32, residual_lm_.config().hidden_size, seq_len);
@@ -1735,7 +1747,7 @@ std::vector<float> VoxCPMRuntime::run_prefill_base_to_residual_inputs_with_last_
     VOXCPM_ASSERT(static_cast<int>(text_mask.size()) == seq_len);
     VOXCPM_ASSERT(static_cast<int>(feat_mask.size()) == seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(65536, 524288);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 65536, 524288);
     ggml_context* raw = graph_ctx.raw_context();
     ggml_tensor* embed_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     ggml_tensor* text_mask_tensor = graph_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
@@ -1790,7 +1802,7 @@ std::vector<float> VoxCPMRuntime::run_minicpm_forward(MiniCPMModel& model,
     VOXCPM_ASSERT(backend_ != nullptr);
     VOXCPM_ASSERT(static_cast<int>(input.size()) == model.config().hidden_size * seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(32768, 262144);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 32768, 262144);
     ggml_tensor* input_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, model.config().hidden_size, seq_len);
     ggml_set_input(input_tensor);
 
@@ -1821,7 +1833,7 @@ void VoxCPMRuntime::run_minicpm_forward_last_hidden_into(MiniCPMModel& model,
     VOXCPM_ASSERT(seq_len > 0);
     VOXCPM_ASSERT(static_cast<int>(input.size()) == model.config().hidden_size * seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(32768, 262144);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 32768, 262144);
     ggml_tensor* input_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, model.config().hidden_size, seq_len);
     ggml_set_input(input_tensor);
 
@@ -1853,7 +1865,7 @@ std::vector<float> VoxCPMRuntime::run_minicpm_forward_last_hidden(MiniCPMModel& 
     VOXCPM_ASSERT(seq_len > 0);
     VOXCPM_ASSERT(static_cast<int>(input.size()) == model.config().hidden_size * seq_len);
 
-    VoxCPMContext graph_ctx = make_graph_ctx(32768, 262144);
+    VoxCPMContext graph_ctx = make_sequence_graph_ctx(seq_len, 32768, 262144);
     ggml_tensor* input_tensor = graph_ctx.new_tensor_2d(GGML_TYPE_F32, model.config().hidden_size, seq_len);
     ggml_set_input(input_tensor);
 
@@ -2270,9 +2282,68 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl(const std::vector<int32_t>& text,
     std::vector<float> residual_hidden;
 
     {
+        constexpr int kChunkedPrefillSeqThreshold = 512;
+        constexpr int kLongPrefillChunkLen = 192;
         std::vector<float> residual_inputs;
-        if (state.persistent_state != nullptr && state.persistent_state->is_initialized()) {
-            VoxCPMContext combined_ctx(ContextType::Graph, 8, 64);
+        const bool use_chunked_prefill = feat != nullptr &&
+                                         state.persistent_state != nullptr &&
+                                         state.persistent_state->is_initialized() &&
+                                         seq_len > kChunkedPrefillSeqThreshold;
+        if (use_chunked_prefill) {
+            for (int chunk_start = 0; chunk_start < seq_len; chunk_start += kLongPrefillChunkLen) {
+                const int chunk_len = std::min(kLongPrefillChunkLen, seq_len - chunk_start);
+                const std::vector<int32_t> chunk_text =
+                    std::vector<int32_t>(text.begin() + chunk_start, text.begin() + chunk_start + chunk_len);
+                const size_t feat_offset = static_cast<size_t>(chunk_start) * static_cast<size_t>(config_.patch_size) *
+                                           static_cast<size_t>(config_.feat_dim);
+                const size_t feat_count = static_cast<size_t>(chunk_len) * static_cast<size_t>(config_.patch_size) *
+                                          static_cast<size_t>(config_.feat_dim);
+                const std::vector<float> chunk_feat = std::vector<float>(feat->begin() + static_cast<std::ptrdiff_t>(feat_offset),
+                                                                         feat->begin() + static_cast<std::ptrdiff_t>(feat_offset + feat_count));
+                std::vector<float> chunk_text_mask_f(static_cast<size_t>(chunk_len), 0.0f);
+                std::vector<float> chunk_feat_mask_f(static_cast<size_t>(chunk_len), 0.0f);
+                for (int t = 0; t < chunk_len; ++t) {
+                    const size_t source_pos = static_cast<size_t>(chunk_start + t);
+                    chunk_text_mask_f[static_cast<size_t>(t)] =
+                        text_mask[source_pos] != 0 ? 1.0f : 0.0f;
+                    chunk_feat_mask_f[static_cast<size_t>(t)] =
+                        feat_mask[source_pos] != 0 ? 1.0f : 0.0f;
+                }
+
+                VoxCPMContext combined_ctx = make_sequence_graph_ctx(chunk_len, 8, 64);
+                ggml_tensor* combined_embed_tensor =
+                    combined_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, chunk_len);
+                VOXCPM_ASSERT(combined_embed_tensor != nullptr);
+                ggml_backend_buffer_t combined_buffer =
+                    backend_->alloc_buffer(combined_ctx.raw_context(), BufferUsage::Compute);
+                VOXCPM_ASSERT(combined_buffer != nullptr);
+                run_embedding_masked_locenc_sequence_to_lm_projection_into(chunk_text,
+                                                                           chunk_feat,
+                                                                           chunk_text_mask_f,
+                                                                           chunk_feat_mask_f,
+                                                                           chunk_len,
+                                                                           combined_embed_tensor);
+                run_prefill_hidden_states_from_tensor_into(combined_embed_tensor,
+                                                           chunk_text_mask_f,
+                                                           chunk_feat_mask_f,
+                                                           chunk_len,
+                                                           *state.base_lm_cache,
+                                                           *state.residual_lm_cache,
+                                                           true,
+                                                           state.persistent_state->lm_hidden(),
+                                                           state.persistent_state->residual_hidden());
+                backend_->free_buffer(combined_buffer);
+            }
+            if (!persistent_only_prefill) {
+                lm_hidden.resize(static_cast<size_t>(base_lm_.config().hidden_size));
+                state.persistent_state->get_lm_hidden_to_host(*backend_, lm_hidden.data(), lm_hidden.size());
+                residual_hidden.resize(static_cast<size_t>(residual_lm_.config().hidden_size));
+                state.persistent_state->get_residual_hidden_to_host(*backend_,
+                                                                    residual_hidden.data(),
+                                                                    residual_hidden.size());
+            }
+        } else if (state.persistent_state != nullptr && state.persistent_state->is_initialized()) {
+            VoxCPMContext combined_ctx = make_sequence_graph_ctx(seq_len, 8, 64);
             ggml_tensor* combined_embed_tensor =
                 combined_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
             VOXCPM_ASSERT(combined_embed_tensor != nullptr);
@@ -2316,7 +2387,7 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl(const std::vector<int32_t>& text,
         } else {
             std::vector<float> combined_embed;
             if (feat_src != nullptr) {
-                VoxCPMContext mask_ctx(ContextType::Graph, 3, 3);
+                VoxCPMContext mask_ctx = make_sequence_graph_ctx(seq_len, 3, 3);
                 ggml_tensor* text_mask_tensor = mask_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
                 ggml_tensor* feat_mask_tensor = mask_ctx.new_tensor_1d(GGML_TYPE_F32, seq_len);
                 VOXCPM_ASSERT(text_mask_tensor != nullptr);
@@ -2325,7 +2396,7 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl(const std::vector<int32_t>& text,
                 VOXCPM_ASSERT(mask_buffer != nullptr);
                 backend_->tensor_set(text_mask_tensor, text_mask_f.data(), 0, text_mask_f.size() * sizeof(float));
                 backend_->tensor_set(feat_mask_tensor, feat_mask_f.data(), 0, feat_mask_f.size() * sizeof(float));
-                VoxCPMContext token_ctx(ContextType::Graph, 1, 1);
+                VoxCPMContext token_ctx = make_sequence_graph_ctx(seq_len, 1, 1);
                 ggml_tensor* token_tensor = token_ctx.new_tensor_1d(GGML_TYPE_I32, seq_len);
                 VOXCPM_ASSERT(token_tensor != nullptr);
                 ggml_backend_buffer_t token_buffer = backend_->alloc_buffer(token_ctx.raw_context(), BufferUsage::Compute);
@@ -2385,7 +2456,7 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl(const std::vector<int32_t>& text,
             const int span_start = prompt_span.start;
             const int span_count = prompt_span.count;
             if (state.output_pool != nullptr && state.output_pool->is_initialized()) {
-                VoxCPMContext span_ctx(ContextType::Graph, 16, 32);
+                VoxCPMContext span_ctx = make_sequence_graph_ctx(span_count, 16, 32);
                 ggml_tensor* span_view =
                     make_feature_sequence_patch_span_view(span_ctx.raw_context(), feat_src, config_, span_start, span_count);
                 VOXCPM_ASSERT(span_view != nullptr);
@@ -2526,7 +2597,7 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl_from_input_tensors_with_prompt_pos
     {
         std::vector<float> residual_inputs;
         if (state.persistent_state != nullptr && state.persistent_state->is_initialized()) {
-            VoxCPMContext combined_ctx(ContextType::Graph, 8, 64);
+            VoxCPMContext combined_ctx = make_sequence_graph_ctx(seq_len, 8, 64);
             ggml_tensor* combined_embed_tensor =
                 combined_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
             VOXCPM_ASSERT(combined_embed_tensor != nullptr);
@@ -2599,7 +2670,7 @@ VoxCPMDecodeState VoxCPMRuntime::prefill_impl_from_input_tensors_with_prompt_pos
         }
 
         if (state.output_pool != nullptr && state.output_pool->is_initialized()) {
-            VoxCPMContext span_ctx(ContextType::Graph, 16, 32);
+            VoxCPMContext span_ctx = make_sequence_graph_ctx(span_count, 16, 32);
             ggml_tensor* span_view =
                 make_feature_sequence_patch_span_view(span_ctx.raw_context(), feat_src, config_, span_start_pos, span_count);
             VOXCPM_ASSERT(span_view != nullptr);
@@ -3124,7 +3195,7 @@ std::pair<std::vector<float>, std::vector<float>> VoxCPMRuntime::benchmark_run_p
     bool is_causal) {
     VOXCPM_ASSERT(backend_ != nullptr);
 
-    VoxCPMContext combined_ctx(ContextType::Graph, 8, 64);
+    VoxCPMContext combined_ctx = make_sequence_graph_ctx(seq_len, 8, 64);
     ggml_tensor* combined_embed_tensor =
         combined_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     VOXCPM_ASSERT(combined_embed_tensor != nullptr);
@@ -3132,7 +3203,7 @@ std::pair<std::vector<float>, std::vector<float>> VoxCPMRuntime::benchmark_run_p
         backend_->alloc_buffer(combined_ctx.raw_context(), BufferUsage::Compute);
     VOXCPM_ASSERT(combined_buffer != nullptr);
 
-    VoxCPMContext hidden_ctx(ContextType::Graph, 8, 64);
+    VoxCPMContext hidden_ctx = make_sequence_graph_ctx(1, 8, 64);
     ggml_tensor* lm_hidden_tensor = hidden_ctx.new_tensor_1d(GGML_TYPE_F32, base_lm_.config().hidden_size);
     VOXCPM_ASSERT(lm_hidden_tensor != nullptr);
     ggml_backend_buffer_t hidden_buffer = backend_->alloc_buffer(hidden_ctx.raw_context(), BufferUsage::State);
@@ -3172,7 +3243,7 @@ std::pair<std::vector<float>, std::vector<float>> VoxCPMRuntime::benchmark_run_p
     bool is_causal) {
     VOXCPM_ASSERT(backend_ != nullptr);
 
-    VoxCPMContext combined_ctx(ContextType::Graph, 8, 64);
+    VoxCPMContext combined_ctx = make_sequence_graph_ctx(seq_len, 8, 64);
     ggml_tensor* combined_embed_tensor =
         combined_ctx.new_tensor_2d(GGML_TYPE_F32, base_lm_.config().hidden_size, seq_len);
     VOXCPM_ASSERT(combined_embed_tensor != nullptr);
@@ -3180,7 +3251,7 @@ std::pair<std::vector<float>, std::vector<float>> VoxCPMRuntime::benchmark_run_p
         backend_->alloc_buffer(combined_ctx.raw_context(), BufferUsage::Compute);
     VOXCPM_ASSERT(combined_buffer != nullptr);
 
-    VoxCPMContext hidden_ctx(ContextType::Graph, 8, 64);
+    VoxCPMContext hidden_ctx = make_sequence_graph_ctx(1, 8, 64);
     ggml_tensor* lm_hidden_tensor = hidden_ctx.new_tensor_1d(GGML_TYPE_F32, base_lm_.config().hidden_size);
     ggml_tensor* residual_hidden_tensor = hidden_ctx.new_tensor_1d(GGML_TYPE_F32, residual_lm_.config().hidden_size);
     VOXCPM_ASSERT(lm_hidden_tensor != nullptr);

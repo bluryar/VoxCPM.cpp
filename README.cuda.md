@@ -8,6 +8,14 @@ This file is a focused walkthrough for building and running VoxCPM.cpp with the 
 - Keep a separate build directory from CPU builds.
 - Verify both the TTS example and the OpenAI-compatible server on CUDA.
 
+## CUDA Service Spec
+
+For the CUDA service path, current request budgeting is:
+
+- `seq_len <= 256`: output-pool fast path, decode cap 128 steps
+- `257-512`: fallback path, decode cap 96 steps
+- `>512`: chunked prefill path, decode cap 64 steps
+
 ## Prerequisites
 
 - NVIDIA GPU

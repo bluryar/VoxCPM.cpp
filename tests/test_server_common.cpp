@@ -4,6 +4,7 @@
 #include "voxcpm/server_common.h"
 #include "test_config.h"
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -237,6 +238,50 @@ TEST_CASE("Service synthesize resets request-scoped runtime state between calls"
     REQUIRE(std::all_of(second.waveform.begin(), second.waveform.end(), [](float value) {
         return std::isfinite(value);
     }));
+}
+
+TEST_CASE("Service synthesize handles longer text inputs without graph context exhaustion", "[server][integration]") {
+    const std::string model_path = get_model_path();
+    REQUIRE(std::filesystem::exists(model_path));
+
+    VoxCPMServiceCore service(model_path, BackendType::CPU, 2);
+    service.load();
+    REQUIRE(service.loaded());
+
+    constexpr int kInputSampleRate = 16000;
+    constexpr float kPi = 3.14159265358979323846f;
+    std::vector<float> mono_audio(1600, 0.0f);
+    for (size_t i = 0; i < mono_audio.size(); ++i) {
+        const float phase = 2.0f * kPi * 220.0f * static_cast<float>(i) / static_cast<float>(kInputSampleRate);
+        mono_audio[i] = 0.05f * std::sin(phase);
+    }
+
+    PromptFeatures prompt = service.encode_prompt_audio("voice_long", "你好", mono_audio, kInputSampleRate);
+    REQUIRE(prompt.prompt_audio_length > 0);
+
+    const std::array<int, 2> repeat_counts = {16, 32};
+    for (int repeat_count : repeat_counts) {
+        std::string long_text;
+        for (int i = 0; i < repeat_count; ++i) {
+            long_text += "这是一个用于回归测试的较长句子。";
+        }
+        REQUIRE(long_text.size() <= 4096);
+
+        SynthesisRequest request;
+        request.text = long_text;
+        request.prompt = prompt;
+        request.cfg_value = 1.5f;
+        request.inference_timesteps = 1;
+        request.streaming_prefix_len = 1;
+
+        const SynthesisResult result = service.synthesize(request);
+        REQUIRE(result.sample_rate == service.sample_rate());
+        REQUIRE(result.generated_frames > 0);
+        REQUIRE_FALSE(result.waveform.empty());
+        REQUIRE(std::all_of(result.waveform.begin(), result.waveform.end(), [](float value) {
+            return std::isfinite(value);
+        }));
+    }
 }
 
 }  // namespace test

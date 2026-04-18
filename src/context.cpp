@@ -12,11 +12,11 @@ namespace voxcpm {
 // Construction / Destruction
 // =============================================================================
 
-VoxCPMContext::VoxCPMContext(ContextType type, int n_tensors, int max_nodes)
+VoxCPMContext::VoxCPMContext(ContextType type, int n_tensors, int max_nodes, size_t extra_mem_size)
     : type_(type), ctx_(nullptr), mem_size_(0), max_nodes_(max_nodes) {
 
     // Calculate memory size (metadata only, no tensor data)
-    mem_size_ = calc_context_size(n_tensors, max_nodes);
+    mem_size_ = calc_context_size(n_tensors, max_nodes) + extra_mem_size;
 
     // Allocate graph buffer if needed
     if (type == ContextType::Graph) {
