@@ -84,6 +84,25 @@ TEST_CASE("Audio encoder produces playable payloads for mp3, opus, wav, and pcm"
 #endif
 }
 
+TEST_CASE("Audio response waveform can be resampled for OpenAI-compatible 24kHz serving", "[server][audio]") {
+    constexpr int kSourceRate = 44100;
+    constexpr int kTargetRate = 24000;
+    constexpr float kPi = 3.14159265358979323846f;
+    std::vector<float> waveform(4410, 0.0f);
+    for (size_t i = 0; i < waveform.size(); ++i) {
+        waveform[i] = 0.1f * std::sin(2.0f * kPi * 220.0f * static_cast<float>(i) / static_cast<float>(kSourceRate));
+    }
+
+    const std::vector<float> resampled = resample_audio_to_rate(waveform, kSourceRate, kTargetRate);
+    REQUIRE(resampled.size() == 2400);
+
+    const std::vector<float> sped = resample_audio_linear(resampled, 1.5);
+    REQUIRE(sped.size() == 1600);
+
+    const std::vector<uint8_t> pcm = encode_audio(AudioResponseFormat::Pcm, sped, kTargetRate);
+    REQUIRE(pcm.size() == sped.size() * sizeof(int16_t));
+}
+
 TEST_CASE("Voice ids are restricted to filesystem-safe characters", "[server]") {
     REQUIRE(is_valid_voice_id("voice_123"));
     REQUIRE(is_valid_voice_id("voice.demo-1"));
@@ -194,6 +213,47 @@ TEST_CASE("Service synthesize runs end-to-end with encoded prompt audio", "[serv
     }));
     REQUIRE(chunk_count > 0);
     REQUIRE(last_chunk_size > 0);
+}
+
+TEST_CASE("Service synthesize can use sparrow voice for a Korean greeting", "[server][integration]") {
+    const std::string model_path = get_model_path();
+    REQUIRE(std::filesystem::exists(model_path));
+
+    const std::filesystem::path voice_dir = get_voice_dir();
+    const std::filesystem::path sparrow_manifest = voice_dir / "sparrow" / "manifest.json";
+    const std::filesystem::path sparrow_prompt = voice_dir / "sparrow" / "prompt_feat.bin";
+    if (!std::filesystem::exists(sparrow_manifest) || !std::filesystem::exists(sparrow_prompt)) {
+        WARN("Sparrow voice fixture not found, skipping test: " << (voice_dir / "sparrow").string());
+        return;
+    }
+
+    VoxCPMServiceCore service(model_path, BackendType::CPU, 2);
+    service.load();
+    REQUIRE(service.loaded());
+
+    VoiceStore store(voice_dir.string());
+    REQUIRE(store.has_voice("sparrow"));
+
+    PromptFeatures sparrow = store.load_voice("sparrow");
+    REQUIRE(sparrow.id == "sparrow");
+    REQUIRE(sparrow.prompt_audio_length > 0);
+    REQUIRE(sparrow.prompt_feat.size() ==
+            static_cast<size_t>(sparrow.prompt_audio_length * sparrow.patch_size * sparrow.feat_dim));
+
+    SynthesisRequest request;
+    request.text = "안녕하세요!";
+    request.prompt = sparrow;
+    request.cfg_value = 1.5f;
+    request.inference_timesteps = 4;
+    request.streaming_prefix_len = 2;
+
+    const SynthesisResult result = service.synthesize(request);
+    REQUIRE(result.sample_rate == service.sample_rate());
+    REQUIRE(result.generated_frames > 0);
+    REQUIRE_FALSE(result.waveform.empty());
+    REQUIRE(std::all_of(result.waveform.begin(), result.waveform.end(), [](float value) {
+        return std::isfinite(value);
+    }));
 }
 
 TEST_CASE("Service synthesize resets request-scoped runtime state between calls", "[server][integration]") {

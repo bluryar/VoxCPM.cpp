@@ -28,6 +28,7 @@ struct Options {
     BackendType backend = BackendType::CPU;
     int threads = 4;
     int max_queue = 8;
+    int output_sample_rate = 0;
     bool disable_auth = false;
 };
 
@@ -82,6 +83,8 @@ Options parse_args(int argc, char** argv) {
             options.disable_auth = true;
         } else if (arg == "--max-queue") {
             options.max_queue = std::stoi(require_value("--max-queue"));
+        } else if (arg == "--output-sample-rate") {
+            options.output_sample_rate = std::stoi(require_value("--output-sample-rate"));
         } else if (arg == "--help" || arg == "-h") {
             std::cout
                 << "Usage: voxcpm-server --model-path MODEL.gguf --model-name NAME --voice-dir DIR [options]\n"
@@ -91,6 +94,7 @@ Options parse_args(int argc, char** argv) {
                 << "  --backend TYPE        cpu|cuda|vulkan|auto\n"
                 << "  --threads N           Default: 4\n"
                 << "  --max-queue N         Default: 8\n"
+                << "  --output-sample-rate HZ  Optional output resample rate before encoding\n"
                 << "  --api-key KEY         Required unless --disable-auth\n"
                 << "  --disable-auth\n";
             std::exit(0);
@@ -106,6 +110,7 @@ Options parse_args(int argc, char** argv) {
     if (options.port < 1 || options.port > 65535) fail("--port must be between 1 and 65535");
     if (options.threads < 1) fail("--threads must be >= 1");
     if (options.max_queue < 0) fail("--max-queue must be >= 0");
+    if (options.output_sample_rate < 0) fail("--output-sample-rate must be >= 0");
     return options;
 }
 
@@ -205,6 +210,30 @@ RequestContext parse_request(const json& body, const Options& options) {
     }
 
     return ctx;
+}
+
+int effective_output_sample_rate(const Options& options, int source_sample_rate) {
+    return options.output_sample_rate > 0 ? options.output_sample_rate : source_sample_rate;
+}
+
+std::vector<float> prepare_response_waveform(std::vector<float> waveform,
+                                             int source_sample_rate,
+                                             int output_sample_rate,
+                                             double speed) {
+    if (source_sample_rate <= 0) {
+        fail("Invalid source sample rate for synthesized audio");
+    }
+    if (output_sample_rate <= 0) {
+        fail("Invalid output sample rate for synthesized audio");
+    }
+
+    if (output_sample_rate != source_sample_rate) {
+        waveform = resample_audio_to_rate(waveform, source_sample_rate, output_sample_rate);
+    }
+    if (speed != 1.0) {
+        waveform = resample_audio_linear(waveform, speed);
+    }
+    return waveform;
 }
 
 void ensure_voice_dir_exists(const std::string& path) {
@@ -381,6 +410,7 @@ int main(int argc, char** argv) {
             try {
                 const json body = json::parse(req.body);
                 const RequestContext ctx = parse_request(body, options);
+                const int response_sample_rate = effective_output_sample_rate(options, core.sample_rate());
 
                 if (!audio_response_format_supported(ctx.format)) {
                     respond_error(res,
@@ -412,8 +442,11 @@ int main(int argc, char** argv) {
                     request.text = ctx.input;
                     request.prompt = std::move(prompt);
                     request.chunk_callback = [&](const std::vector<float>& chunk_waveform) {
-                        const std::vector<float> sped_up = resample_audio_linear(chunk_waveform, ctx.speed);
-                        const std::vector<uint8_t> encoded = encode_audio(ctx.format, sped_up, core.sample_rate());
+                        const std::vector<float> prepared = prepare_response_waveform(chunk_waveform,
+                                                                                      core.sample_rate(),
+                                                                                      response_sample_rate,
+                                                                                      ctx.speed);
+                        const std::vector<uint8_t> encoded = encode_audio(ctx.format, prepared, response_sample_rate);
                         const std::string encoded64 = base64_encode(encoded.data(), encoded.size());
                         const json payload = {
                             {"type", "audio.delta"},
@@ -442,8 +475,11 @@ int main(int argc, char** argv) {
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
                 SynthesisResult result = core.synthesize(request);
-                result.waveform = resample_audio_linear(result.waveform, ctx.speed);
-                const std::vector<uint8_t> payload = encode_audio(ctx.format, result.waveform, result.sample_rate);
+                result.waveform = prepare_response_waveform(std::move(result.waveform),
+                                                            result.sample_rate,
+                                                            response_sample_rate,
+                                                            ctx.speed);
+                const std::vector<uint8_t> payload = encode_audio(ctx.format, result.waveform, response_sample_rate);
                 res.set_header("Content-Type", audio_content_type(ctx.format));
                 res.set_content(reinterpret_cast<const char*>(payload.data()), payload.size(), audio_content_type(ctx.format));
             } catch (const std::invalid_argument& e) {

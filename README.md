@@ -231,6 +231,13 @@ Response behavior:
     - `event: audio.delta`
     - `event: audio.completed`
 
+Server-side output rate:
+
+- pass `--output-sample-rate HZ` to `voxcpm-server` to resample synthesized audio before it is encoded
+- if omitted, the server uses the model's AudioVAE output rate
+- for OpenAI-compatible `pcm` responses, set `--output-sample-rate 24000` if your client expects 24 kHz PCM
+- the same override also applies to `wav`, `mp3`, and `opus`
+
 Queue behavior:
 
 - one synthesis request runs at a time per server process
@@ -307,6 +314,7 @@ CUDA example:
   --backend cuda \
   --voice-dir ./runtime/voices \
   --max-queue 8 \
+  --output-sample-rate 24000 \
   --disable-auth
 ```
 
@@ -322,6 +330,7 @@ CPU example:
   --backend cpu \
   --voice-dir ./runtime/voices \
   --max-queue 8 \
+  --output-sample-rate 24000 \
   --disable-auth
 ```
 

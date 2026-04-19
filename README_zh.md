@@ -231,6 +231,13 @@ JSON 请求字段：
     - `event: audio.delta`
     - `event: audio.completed`
 
+服务端输出采样率：
+
+- 启动 `voxcpm-server` 时可以加 `--output-sample-rate HZ`，在编码前先把合成音频重采样到指定采样率
+- 如果省略该参数，服务器会使用模型 AudioVAE 的输出采样率
+- 对 OpenAI-compatible 的 `pcm` 返回，若客户端按 24 kHz 解释播放，请显式设置 `--output-sample-rate 24000`
+- 这个覆盖同样适用于 `wav`、`mp3` 和 `opus`
+
 队列行为：
 
 - 单个 server 进程同一时间只处理一个合成请求
@@ -307,6 +314,7 @@ CUDA 示例：
   --backend cuda \
   --voice-dir ./runtime/voices \
   --max-queue 8 \
+  --output-sample-rate 24000 \
   --disable-auth
 ```
 
@@ -322,6 +330,7 @@ CPU 示例：
   --backend cpu \
   --voice-dir ./runtime/voices \
   --max-queue 8 \
+  --output-sample-rate 24000 \
   --disable-auth
 ```
 

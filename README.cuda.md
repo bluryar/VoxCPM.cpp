@@ -123,6 +123,7 @@ Start the OpenAI-compatible server:
   --backend cuda \
   --voice-dir ./runtime/voices \
   --max-queue 8 \
+  --output-sample-rate 24000 \
   --disable-auth
 ```
 
@@ -194,6 +195,9 @@ cmake --build build-cuda -j8
   - Reconfigure with `-DVOXCPM_ENABLE_MP3=ON`.
 - `CUDA_VISIBLE_DEVICES` in your systemd unit only selects which GPU the process can see.
   - It does not affect `response_format`, `mp3`/`opus` encoding, or OpenAI-compatible audio MIME selection.
+- If an OpenAI-compatible client assumes 24 kHz PCM playback, start `voxcpm-server` with `--output-sample-rate 24000`.
+  - `pcm` responses have no embedded sample-rate header, so the server-side output rate must match the client expectation.
+  - The same override also applies to `wav`, `mp3`, and `opus`.
 
 ## Minimal checklist
 

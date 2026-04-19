@@ -23,6 +23,14 @@ inline std::string default_trace_dir() {
 #endif
 }
 
+inline std::string default_voice_dir() {
+#ifdef VOXCPM_DEFAULT_VOICE_DIR
+    return VOXCPM_DEFAULT_VOICE_DIR;
+#else
+    return "../runtime/voices";
+#endif
+}
+
 inline std::string get_model_path() {
     const char* env = std::getenv("VOXCPM_MODEL_PATH");
     if (env != nullptr && env[0] != '\0') {
@@ -41,6 +49,14 @@ inline std::string get_trace_dir() {
 
 inline std::string get_trace_path(const std::string& trace_name) {
     return (std::filesystem::path(get_trace_dir()) / trace_name).string();
+}
+
+inline std::string get_voice_dir() {
+    const char* env = std::getenv("VOXCPM_VOICE_DIR");
+    if (env != nullptr && env[0] != '\0') {
+        return env;
+    }
+    return default_voice_dir();
 }
 
 }  // namespace test
