@@ -548,6 +548,7 @@ enum class BufferUsage {
 - `2026-04-02`: `decode` 当前 patch 追加到 `latent_seq` 已切到 d2d 路径，去掉了这一段 `tensor_get -> host vector -> tensor_set` 的回写链。
 - `2026-04-02`: `decode` 在 persistent path 下已不再分配无效 host hidden 向量，也不再写回会立刻被清空或覆盖的 `prefix_feat_cond` host shadow。
 - `2026-04-17`: OpenAI-compatible TTS server 已完成 `response_format=mp3/opus` 的实际编码与 SSE `audio.delta` 同格式输出；同时在 `/v1/audio/speech` 请求边界加入 runtime/backend reset，修复同一 core/service 的重复请求 `SEGV`，相关 README / CMake / tests / smoke 已收口。
+- `2026-04-20`: 流式 synth 的 chunk AudioVAE decode 现在会在继续下一步 decode 前清理 runtime/state cached graph handles，避免 compute arena 扩容后复用悬挂 tensor data；ASan 复现用例、CUDA service 集成测试与非 CLI runtime skeleton 已验证通过。
 
 ## 11. 参考文档
 

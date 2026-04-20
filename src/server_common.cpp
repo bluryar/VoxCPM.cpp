@@ -428,6 +428,17 @@ void append_stream_frame(std::vector<float>& recent_frames,
     }
 }
 
+void clear_decode_graph_caches_after_streaming_audio_decode(VoxCPMRuntime& runtime,
+                                                            VoxCPMDecodeState& state) {
+    // Streaming AudioVAE chunk decode can resize the shared compute arena.
+    // Drop cached graph handles before the next decode step can reuse stale tensor data pointers.
+    runtime.reset_request_state();
+    state.base_lm_step_graph.clear();
+    state.residual_lm_step_graph.clear();
+    state.base_lm_step_graph_position = -1;
+    state.residual_lm_step_graph_position = -1;
+}
+
 }  // namespace
 
 VoiceStore::VoiceStore(std::string root_dir)
@@ -785,8 +796,8 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             fill_noise(noise, patch_size_value, feat_dim_value, rng);
             VoxCPMDecodeOptions decode_options;
             decode_options.export_patch_to_host = !use_output_pool_timeline;
-            decode_options.publish_stop_logits_to_output = use_output_pool_timeline;
-            decode_options.publish_patch_to_output = use_output_pool_timeline;
+            decode_options.publish_stop_logits_to_output = !use_output_pool_timeline;
+            decode_options.publish_patch_to_output = !use_output_pool_timeline;
             decode_options.trust_persistent_state = use_output_pool_timeline;
             VoxCPMDecodeResult result = runtime_.decode(std::move(state),
                                                         noise,
@@ -817,6 +828,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
                             chunk_waveform.erase(chunk_waveform.begin(),
                                                  chunk_waveform.end() - static_cast<std::ptrdiff_t>(patch_len));
                         }
+                        clear_decode_graph_caches_after_streaming_audio_decode(runtime_, state);
                         request.chunk_callback(chunk_waveform);
                     }
                 } else {
@@ -836,6 +848,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
                             chunk_waveform.erase(chunk_waveform.begin(),
                                                  chunk_waveform.end() - static_cast<std::ptrdiff_t>(patch_len));
                         }
+                        clear_decode_graph_caches_after_streaming_audio_decode(runtime_, state);
                         request.chunk_callback(chunk_waveform);
                     }
                 }
