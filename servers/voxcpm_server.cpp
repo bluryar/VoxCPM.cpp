@@ -28,6 +28,7 @@ struct Options {
     BackendType backend = BackendType::CPU;
     int threads = 4;
     int max_queue = 8;
+    int max_attempts = 3;
     int output_sample_rate = 0;
     int max_decode_steps = 0;
     bool disable_auth = false;
@@ -39,6 +40,7 @@ struct RequestContext {
     AudioResponseFormat format = AudioResponseFormat::Mp3;
     double speed = 1.0;
     bool sse = false;
+    int max_attempts;
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -84,6 +86,8 @@ Options parse_args(int argc, char** argv) {
             options.disable_auth = true;
         } else if (arg == "--max-queue") {
             options.max_queue = std::stoi(require_value("--max-queue"));
+        } else if (arg == "--max-attempts") {
+            options.max_attempts = std::stoi(require_value("--max-attempts"));
         } else if (arg == "--output-sample-rate") {
             options.output_sample_rate = std::stoi(require_value("--output-sample-rate"));
         } else if (arg == "--max-decode-steps") {
@@ -97,6 +101,7 @@ Options parse_args(int argc, char** argv) {
                 << "  --backend TYPE        cpu|cuda|vulkan|auto\n"
                 << "  --threads N           Default: 4\n"
                 << "  --max-queue N         Default: 8\n"
+                << "  --max-attempts N      Default: 1\n"
                 << "  --max-decode-steps N  Override per-request decode step cap, 0 keeps backend default\n"
                 << "  --output-sample-rate HZ  Optional output resample rate before encoding\n"
                 << "  --api-key KEY         Required unless --disable-auth\n"
@@ -114,6 +119,7 @@ Options parse_args(int argc, char** argv) {
     if (options.port < 1 || options.port > 65535) fail("--port must be between 1 and 65535");
     if (options.threads < 1) fail("--threads must be >= 1");
     if (options.max_queue < 0) fail("--max-queue must be >= 0");
+    if (options.max_attempts < 1) fail("--max-attempts must be >= 1");
     if (options.output_sample_rate < 0) fail("--output-sample-rate must be >= 0");
     if (options.max_decode_steps < 0 || options.max_decode_steps > 2000) {
         fail("--max-decode-steps must be between 0 and 2000");
@@ -214,6 +220,15 @@ RequestContext parse_request(const json& body, const Options& options) {
         ctx.sse = true;
     } else {
         fail("`stream_format` must be `audio` or `sse`");
+    }
+
+    if (body.contains("max-attempts")) {
+        ctx.max_attempts = body.value("max-attempts", options.max_attempts);
+        if (ctx.max_attempts != 1 && stream_format == "sse") fail("`sse` mode does not support multiple attempts");
+        if (ctx.max_attempts < 1) fail("`max-attempts` must not be less than 1");
+    } else {
+        // Default to 1, so stream_format="sse" is supported without specifying max_attempts.
+        ctx.max_attempts = 1;
     }
 
     return ctx;
@@ -483,7 +498,8 @@ int main(int argc, char** argv) {
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
                 request.max_decode_steps = options.max_decode_steps;
-                request.retry_badcase = true;
+                request.retry_badcase = (ctx.max_attempts == 1 ? false : true);
+                request.retry_badcase_max_times = std::min(ctx.max_attempts, options.max_attempts);
                 SynthesisResult result = core.synthesize(request);
                 result.waveform = prepare_response_waveform(std::move(result.waveform),
                                                             result.sample_rate,
