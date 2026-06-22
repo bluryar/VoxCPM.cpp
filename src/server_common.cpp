@@ -1109,9 +1109,10 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             std::cerr << "[tts] decode step budget reached before stop token; increase --max-decode-steps "
                          "if the output is truncated.\n";
         }
-        if (retry_badcase &&
-            generated_frames >= static_cast<int>(target_text_token_count * request.retry_badcase_ratio_threshold) &&
-            attempt + 1 < max_attempts) {
+        if (retry_badcase && (attempt + 1 < max_attempts) && (
+               (generated_frames >= static_cast<int>(target_text_token_count * request.retry_badcase_ratio_threshold))
+            || (generated_frames < std::max(1, target_text_token_count))
+        )) {
             std::cerr << "[tts] badcase detected: audio_text_ratio="
                       << (static_cast<float>(generated_frames) / static_cast<float>(target_text_token_count))
                       << ", retrying attempt " << (attempt + 2) << "/" << max_attempts << "\n";
