@@ -483,6 +483,7 @@ int main(int argc, char** argv) {
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
                 request.max_decode_steps = options.max_decode_steps;
+                request.retry_badcase = true;
                 SynthesisResult result = core.synthesize(request);
                 result.waveform = prepare_response_waveform(std::move(result.waveform),
                                                             result.sample_rate,
