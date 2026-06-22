@@ -224,7 +224,7 @@ RequestContext parse_request(const json& body, const Options& options) {
 
     if (body.contains("max-attempts")) {
         ctx.max_attempts = body.value("max-attempts", options.max_attempts);
-        if (ctx.max_attempts != 1 && stream_format == "sse") fail("`sse` mode does not support multiple attempts");
+        if (ctx.sse && ctx.max_attempts != 1) fail("`sse` mode does not support multiple attempts");
         if (ctx.max_attempts < 1) fail("`max-attempts` must not be less than 1");
     } else {
         // Default to 1, so stream_format="sse" is supported without specifying max_attempts.
