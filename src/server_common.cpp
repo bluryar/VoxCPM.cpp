@@ -998,7 +998,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         // Reference-only mode: voice cloning without control instructions.
         mode_prompt.reference_feat = request.prompt.reference_feat;
         mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
-    }   // else (no reference or instructions): audio will be generated based on an arbitraty voice.
+    }   // else (no reference or instructions): audio will be generated based on an arbitrary voice.
     const bool has_prompt_audio = mode_prompt.prompt_audio_length > 0;
     const bool has_reference_audio = mode_prompt.reference_audio_length > 0;
     const std::vector<float>& active_features = has_prompt_audio ? mode_prompt.prompt_feat : mode_prompt.reference_feat;
