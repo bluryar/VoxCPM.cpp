@@ -76,6 +76,14 @@ size_t skip_ascii_whitespace(const std::string& text, size_t pos) {
     return pos;
 }
 
+static inline bool test_for_control_prefix(const std::string& text) {
+    const size_t start = skip_ascii_whitespace(text, 0);
+    if (
+               text.compare(start, 1, "(") == 0
+            || text.compare(start, 3, "（") == 0
+    ) return true;
+    return false;
+}
 std::pair<std::string, bool> strip_hifi_control_prefix(const std::string& text) {
     const size_t start = skip_ascii_whitespace(text, 0);
     if (start >= text.size()) {
@@ -933,17 +941,19 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     if (request.prompt.reference_audio_length < 0) {
         fail("Voice metadata is invalid: reference_audio_length must be >= 0");
     }
-    if (request.prompt.patch_size != patch_size_value) {
-        fail("Voice metadata patch_size does not match the loaded model");
-    }
-    if (request.prompt.feat_dim != feat_dim_value) {
-        fail("Voice metadata feat_dim does not match the loaded model");
-    }
-    if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
-        fail("Voice metadata is inconsistent with stored prompt features");
-    }
-    if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
-        fail("Voice metadata is inconsistent with stored reference features");
+    if (!(request.prompt.prompt_feat.empty() && request.prompt.reference_feat.empty())) {
+        if (request.prompt.patch_size != patch_size_value) {
+            fail("Voice metadata patch_size does not match the loaded model");
+        }
+        if (request.prompt.feat_dim != feat_dim_value) {
+            fail("Voice metadata feat_dim does not match the loaded model");
+        }
+        if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
+            fail("Voice metadata is inconsistent with stored prompt features");
+        }
+        if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
+            fail("Voice metadata is inconsistent with stored reference features");
+        }
     }
     if ((request.prompt.prompt_audio_length == 0) != request.prompt.prompt_text.empty()) {
         fail("Voice metadata is invalid: prompt_text must be provided iff prompt audio is present");
@@ -961,30 +971,52 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     runtime_.reset_request_state();
     backend_->reset_request_state();
 
-    const bool has_prompt_audio = request.prompt.prompt_audio_length > 0;
-    const bool has_reference_audio = request.prompt.reference_audio_length > 0;
+    PromptFeatures mode_prompt; // Values should be initialised to zero.
     std::string effective_text = request.text;
-    if (has_prompt_audio) {
+    if (test_for_control_prefix(request.text)) {
+        // Controllable Voice Cloning mode: use reference audio features.
+        if (!request.prompt.reference_feat.empty()) {
+            mode_prompt.reference_feat = request.prompt.reference_feat;
+            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
+        } else if (!request.prompt.prompt_feat.empty()) {
+            // Registered voice was stored in Hi-Fi format-- adapt for controllable mode.
+            mode_prompt.reference_feat = request.prompt.prompt_feat;
+            mode_prompt.reference_audio_length = request.prompt.prompt_audio_length;
+        }
+    } else if (!request.prompt.prompt_feat.empty()) {
+        // Hi-Fi / Ultimate Cloning mode: audio and transcript are required.
+        mode_prompt.prompt_feat = request.prompt.prompt_feat;
+        mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+        mode_prompt.prompt_text = request.prompt.prompt_text;
+
+        // Strip control prefix if present.
         const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
         if (stripped) {
-            std::cerr << "[tts] Hi-Fi mode ignores control instructions; stripping the leading parenthesized prefix.\n";
             effective_text = stripped_text;
         }
-    }
+    } else if (!request.prompt.reference_feat.empty()) {
+        // Reference-only mode: voice cloning without control instructions.
+        mode_prompt.reference_feat = request.prompt.reference_feat;
+        mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
+    }   // else (no reference or instructions): audio will be generated based on an arbitraty voice.
+    const bool has_prompt_audio = mode_prompt.prompt_audio_length > 0;
+    const bool has_reference_audio = mode_prompt.reference_audio_length > 0;
+    const std::vector<float>& active_features = has_prompt_audio ? mode_prompt.prompt_feat : mode_prompt.reference_feat;
+
     bool retry_badcase = request.retry_badcase;
     if (retry_badcase && request.chunk_callback) {
         std::cerr << "[tts] retry_badcase is not supported with streaming chunks; disabling retries.\n";
         retry_badcase = false;
     }
     const PreparedConditioning prepared =
-        build_conditioning(*split_tokenizer_, effective_text, request.prompt, patch_size_value, feat_dim_value);
+        build_conditioning(*split_tokenizer_, effective_text, mode_prompt, patch_size_value, feat_dim_value);
     const int seq_len = static_cast<int>(prepared.full_text_tokens.size());
     std::cerr << "[tts] synth start seq_len=" << prepared.full_text_tokens.size()
-              << " prompt_audio_length=" << request.prompt.prompt_audio_length
-              << " reference_audio_length=" << request.prompt.reference_audio_length
-              << " prompt_feat_size=" << request.prompt.prompt_feat.size()
+              << " prompt_audio_length=" << mode_prompt.prompt_audio_length
+              << " reference_audio_length=" << mode_prompt.reference_audio_length
+              << " prompt_feat_size=" << active_features.size()
               << "\n";
-    const int prompt_audio_length = request.prompt.prompt_audio_length;
+    const int prompt_audio_length = mode_prompt.prompt_audio_length;
     const int target_text_token_count =
         std::max<int>(1, static_cast<int>(split_tokenizer_->tokenize(effective_text).size()));
     const int natural_max_len =
@@ -1028,8 +1060,8 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         if (use_fallback_streaming_window && context_frames > 0) {
             const size_t context_offset = static_cast<size_t>(prompt_audio_length - context_frames) * frame_stride;
             stream_recent_frames.insert(stream_recent_frames.end(),
-                                        request.prompt.prompt_feat.begin() + static_cast<std::ptrdiff_t>(context_offset),
-                                        request.prompt.prompt_feat.end());
+                                        active_features.begin() + static_cast<std::ptrdiff_t>(context_offset),
+                                        active_features.end());
         }
 
         for (int step = 0; step < max_len; ++step) {
@@ -1169,7 +1201,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
         } else {
             if (use_stateful_final_audio_decode) {
-                const std::vector<float> decode_frames = build_decode_feature_sequence(request.prompt.prompt_feat,
+                const std::vector<float> decode_frames = build_decode_feature_sequence(active_features,
                                                                                        prompt_audio_length,
                                                                                        generated_steps,
                                                                                        request.streaming_prefix_len,
@@ -1190,7 +1222,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
                 prepended_context_frames = 0;
             }
             if (waveform.empty()) {
-                latent = build_decode_latent_sequence(request.prompt.prompt_feat,
+                latent = build_decode_latent_sequence(active_features,
                                                       prompt_audio_length,
                                                       generated_steps,
                                                       request.streaming_prefix_len,

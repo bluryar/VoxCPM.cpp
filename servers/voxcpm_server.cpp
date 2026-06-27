@@ -187,22 +187,36 @@ RequestContext parse_request(const json& body, const Options& options) {
     if (body.contains("instructions") && !body["instructions"].is_null()) {
         const std::string instructions = body["instructions"].is_string() ? body["instructions"].get<std::string>() : "";
         if (!instructions.empty()) {
-            throw std::invalid_argument("`instructions` is not supported by VoxCPM v1");
+            if (options.model_name.length() < 7 || options.model_name.compare(0, 6, "voxcpm-")) {
+                throw std::invalid_argument("`model-name` has an unexpected value.");
+            }
+            switch (options.model_name[7]) {
+                case 0:
+                case 1:
+                    throw std::invalid_argument("`instructions` are not supported by VoxCPM versions less than 2");
+            }
+
+            switch (static_cast<char32_t>(ctx.input[0])) {
+                case '(':
+                case U'（':
+                    throw std::invalid_argument("instructions can not be provided both as a J.SON field and in the input text string");
+                default:
+                    ctx.input = "(" + instructions + ")" + ctx.input;
+            }
         }
     }
 
-    if (!body.contains("voice")) {
-        fail("`voice` is required");
-    }
-    if (body["voice"].is_string()) {
-        ctx.voice_id = body["voice"].get<std::string>();
-    } else if (body["voice"].is_object() && body["voice"].contains("id") && body["voice"]["id"].is_string()) {
-        ctx.voice_id = body["voice"]["id"].get<std::string>();
-    } else {
-        fail("`voice` must be a string or an object with an `id` field");
-    }
-    if (!is_valid_voice_id(ctx.voice_id)) {
-        fail("`voice` must be a valid voice id");
+    if (body.contains("voice")) {
+        if (body["voice"].is_string()) {
+            ctx.voice_id = body["voice"].get<std::string>();
+        } else if (body["voice"].is_object() && body["voice"].contains("id") && body["voice"]["id"].is_string()) {
+            ctx.voice_id = body["voice"]["id"].get<std::string>();
+        } else {
+            fail("`voice` must be a string or an object with an `id` field");
+        }
+        if (!is_valid_voice_id(ctx.voice_id)) {
+            fail("`voice` must be a valid voice id");
+        }
     }
 
     const std::string response_format = body.value("response_format", std::string("mp3"));
@@ -369,15 +383,13 @@ int main(int argc, char** argv) {
                 if (!req.form.has_field("id")) {
                     fail("Missing multipart field `id`");
                 }
-                if (!req.form.has_field("text")) {
-                    fail("Missing multipart field `text`");
-                }
+                // Reference audio file is currently still required for voice registration.
                 if (!req.form.has_file("audio")) {
                     fail("Missing multipart file `audio`");
                 }
 
                 const std::string id = req.form.get_field("id");
-                const std::string text = req.form.get_field("text");
+                const std::string text = req.form.has_field("text") ? req.form.get_field("text") : "";
                 if (!is_valid_voice_id(id)) {
                     fail("Invalid voice id");
                 }
@@ -389,7 +401,12 @@ int main(int argc, char** argv) {
                 const auto file = req.form.get_file("audio");
                 const DecodedAudio decoded = decode_audio_from_memory(file.content.data(), file.content.size());
                 const std::vector<float> mono = convert_to_mono(decoded);
-                PromptFeatures features = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
+                PromptFeatures features;
+                if (text.empty()) {
+                    features = core.encode_reference_audio(id, mono, decoded.sample_rate);
+                } else {
+                    features = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
+                }
                 voice_store.save_voice(features);
                 respond_json(res, 201, metadata_to_json(voice_store.load_metadata(id)));
             } catch (const std::exception& e) {
@@ -451,11 +468,13 @@ int main(int argc, char** argv) {
                 }
 
                 PromptFeatures prompt;
-                try {
-                    prompt = voice_store.load_voice(ctx.voice_id);
-                } catch (const std::exception&) {
-                    respond_error(res, 400, "Unknown voice id.", "invalid_request_error", "voice_not_found");
-                    return;
+                if (!ctx.voice_id.empty()) {
+                    try {
+                        prompt = voice_store.load_voice(ctx.voice_id);
+                    } catch (const std::exception&) {
+                        respond_error(res, 400, "Unknown voice id.", "invalid_request_error", "voice_not_found");
+                        return;
+                    }
                 }
 
                 if (ctx.sse) {
