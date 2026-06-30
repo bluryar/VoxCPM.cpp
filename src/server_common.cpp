@@ -941,22 +941,24 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     if (request.prompt.reference_audio_length < 0) {
         fail("Voice metadata is invalid: reference_audio_length must be >= 0");
     }
-    if (!(request.prompt.prompt_feat.empty() && request.prompt.reference_feat.empty())) {
-        if (request.prompt.patch_size != patch_size_value) {
-            fail("Voice metadata patch_size does not match the loaded model");
+    if (!request.has_uploaded_prompt_audio) {
+        if (!(request.prompt.prompt_feat.empty() && request.prompt.reference_feat.empty())) {
+            if (request.prompt.patch_size != patch_size_value) {
+                fail("Voice metadata patch_size does not match the loaded model");
+            }
+            if (request.prompt.feat_dim != feat_dim_value) {
+                fail("Voice metadata feat_dim does not match the loaded model");
+            }
+            if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
+                fail("Voice metadata is inconsistent with stored prompt features");
+            }
+            if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
+                fail("Voice metadata is inconsistent with stored reference features");
+            }
         }
-        if (request.prompt.feat_dim != feat_dim_value) {
-            fail("Voice metadata feat_dim does not match the loaded model");
+        if ((request.prompt.prompt_audio_length == 0) != request.prompt.prompt_text.empty()) {
+            fail("Voice metadata is invalid: prompt_text must be provided iff prompt audio is present");
         }
-        if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
-            fail("Voice metadata is inconsistent with stored prompt features");
-        }
-        if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
-            fail("Voice metadata is inconsistent with stored reference features");
-        }
-    }
-    if ((request.prompt.prompt_audio_length == 0) != request.prompt.prompt_text.empty()) {
-        fail("Voice metadata is invalid: prompt_text must be provided iff prompt audio is present");
     }
     if (request.retry_badcase_max_times < 1) {
         fail("retry_badcase_max_times must be >= 1");
@@ -973,32 +975,72 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
 
     PromptFeatures mode_prompt; // Values should be initialised to zero.
     std::string effective_text = request.text;
-    if (test_for_control_prefix(request.text)) {
-        // Controllable Voice Cloning mode: use reference audio features.
-        if (!request.prompt.reference_feat.empty()) {
+    if (!request.prompt.id.empty()) {
+        // Voice specified: it must be used.
+        if (request.prompt.reference_feat.empty() && request.prompt.prompt_feat.empty()) {
+            fail("Selected voice is unusable (missing features).");
+        }
+        if (request.has_uploaded_prompt_audio) {
+            // Combined Mode: voice style + audio to continue.
+            // Reference for timbre + prompt for context (best cloning similarity).
+            std::cerr << "Mode: Combined (voice + continuation)\n";
             mode_prompt.reference_feat = request.prompt.reference_feat;
             mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
-        } else if (!request.prompt.prompt_feat.empty()) {
-            // Registered voice was stored in Hi-Fi format-- adapt for controllable mode.
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+
+            {
+                // Strip control prefix, if present, from the script to be spoken.
+                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+                if (stripped) effective_text = stripped_text;
+            }
+            {
+                // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.prompt.prompt_text);
+                if (stripped) mode_prompt.prompt_text = stripped_text;
+                else mode_prompt.prompt_text = request.prompt.prompt_text;
+            }
+        } else if (test_for_control_prefix(request.text)) {
+            // Controllable Voice Cloning: voice + control instructions.
+            // Isolated voice cloning from a reference clip.
+            std::cerr << "Mode: Controllable Voice Cloning\n";
             mode_prompt.reference_feat = request.prompt.prompt_feat;
             mode_prompt.reference_audio_length = request.prompt.prompt_audio_length;
+        } else {
+            // Hi-Fi Mode: only voice (use transcript from registration).
+            // Seamless continuation from prompt audio.
+            std::cerr << "Mode: Hi-Fi\n";
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+            mode_prompt.prompt_text = request.prompt.prompt_text;
+            // I am not sure whether reference_feat should also be used in this mode.
+            mode_prompt.reference_feat = request.prompt.reference_feat;
+            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
+            // No need to strip control prefix-- we already tested out the possibility of one.
         }
-    } else if (!request.prompt.prompt_feat.empty()) {
-        // Hi-Fi / Ultimate Cloning mode: audio and transcript are required.
-        mode_prompt.prompt_feat = request.prompt.prompt_feat;
-        mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
-        mode_prompt.prompt_text = request.prompt.prompt_text;
+    } else {
+        // No voice specified.
+        // Zero-shot / text-only synthesis.
+        if (request.has_uploaded_prompt_audio) {
+            // Continuation Mode.
+            std::cerr << "Mode: Continuation\n";
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
 
-        // Strip control prefix if present.
-        const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
-        if (stripped) {
-            effective_text = stripped_text;
-        }
-    } else if (!request.prompt.reference_feat.empty()) {
-        // Reference-only mode: voice cloning without control instructions.
-        mode_prompt.reference_feat = request.prompt.reference_feat;
-        mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
-    }   // else (no reference or instructions): audio will be generated based on an arbitrary voice.
+            {
+                // Strip control prefix, if present, from the script to be spoken.
+                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+                if (stripped) effective_text = stripped_text;
+            }
+            {
+                // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.prompt.prompt_text);
+                if (stripped) mode_prompt.prompt_text = stripped_text;
+                else mode_prompt.prompt_text = request.prompt.prompt_text;
+            }
+        }   // else: Voice Design Mode: generate speech based on any (optional) control instructions.
+    }
+    std::cerr << "effective_text: \"" << effective_text << '"' << '\n';
     const bool has_prompt_audio = mode_prompt.prompt_audio_length > 0;
     const bool has_reference_audio = mode_prompt.reference_audio_length > 0;
     const std::vector<float>& active_features = has_prompt_audio ? mode_prompt.prompt_feat : mode_prompt.reference_feat;
@@ -1247,6 +1289,41 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     }
 
     fail("Retry loop exhausted without producing an accepted sample");
+}
+
+std::vector<float> VoxCPMServiceCore::convert_prompt_feat_to_reference_feat(const std::vector<float>& prompt_feat) {
+    // Note: This may not work well for all voices. Particularly quiet voices.
+
+    const size_t floats_per_patch = static_cast<size_t>(this->patch_size()) * this->feat_dim();
+    const size_t num_patches = prompt_feat.size() / floats_per_patch;
+    if (num_patches == 0) return {};
+
+    // Find the first non-zero patch by checking the mean magnitude of the patch.
+    size_t first_nonzero = 0;
+    for (size_t i = 0; i < num_patches; ++i) {
+        const float* patch_data = prompt_feat.data() + i * floats_per_patch;
+        float sum = 0.0f;
+        for (size_t j = 0; j < floats_per_patch; ++j) {
+            sum += std::abs(patch_data[j]);
+        }
+        if (sum > static_cast<float>(floats_per_patch) * 1e-4f) {
+            first_nonzero = i;
+            break;
+        }
+    }
+
+    // If no padding was added, return a copy.
+    if (first_nonzero == 0) return prompt_feat;
+
+    // Construct right-padded features: [real_patches, zero_patches]
+    std::vector<float> ref_feat;
+    ref_feat.reserve(prompt_feat.size());
+    ref_feat.insert(ref_feat.end(),
+            prompt_feat.data() + first_nonzero * floats_per_patch,
+            prompt_feat.data() + num_patches * floats_per_patch);
+    ref_feat.insert(ref_feat.end(), first_nonzero * floats_per_patch, 0.0f);
+
+    return ref_feat;
 }
 
 int VoxCPMServiceCore::sample_rate() const {

@@ -18,9 +18,9 @@ namespace voxcpm {
 struct PromptFeatures {
     std::string id;
     std::string prompt_text;
-    std::vector<float> prompt_feat;
+    std::vector<float> prompt_feat;    // Left-padded.
     int prompt_audio_length = 0;
-    std::vector<float> reference_feat;
+    std::vector<float> reference_feat; // Right-padded.
     int reference_audio_length = 0;
     int sample_rate = 0;
     int patch_size = 0;
@@ -46,6 +46,7 @@ struct SynthesisRequest {
     PromptFeatures prompt;
     float cfg_value = 2.0f;
     int inference_timesteps = 10;
+    bool has_uploaded_prompt_audio = false;
     int streaming_prefix_len = 4;
     bool retry_badcase = false;
     int retry_badcase_max_times = 3;
@@ -89,6 +90,8 @@ public:
                                          const std::vector<float>& mono_audio,
                                          int sample_rate);
     SynthesisResult synthesize(const SynthesisRequest& request);
+    std::vector<float> convert_prompt_feat_to_reference_feat(
+                                      const std::vector<float>& prompt_feat);
 
     int sample_rate() const;
     int patch_size() const;

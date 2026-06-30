@@ -533,4 +533,30 @@ std::string base64_encode(const uint8_t* data, size_t size) {
     return out;
 }
 
+std::vector<uint8_t> base64_decode(const std::string& in) {
+    std::vector<uint8_t> out;
+    if (in.empty()) return out;
+
+    int val = 0;
+    int valb = 0;
+    for (char c : in) {
+        if (c == '=') break;
+        int idx = 0;
+        if (c >= 'A' && c <= 'Z') idx = c - 'A';
+        else if (c >= 'a' && c <= 'z') idx = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') idx = c - '0' + 52;
+        else if (c == '+') idx = 62;
+        else if (c == '/') idx = 63;
+        else continue;
+
+        val = (val << 6) | idx;
+        valb += 6;
+        if (valb >= 8) {
+            out.push_back((val >> (valb - 8)) & 0xFF);
+            valb -= 8;
+        }
+    }
+    return out;
+}
+
 }  // namespace voxcpm

@@ -39,6 +39,7 @@ std::vector<uint8_t> encode_audio(AudioResponseFormat format,
                                   const std::vector<float>& waveform,
                                   int sample_rate);
 std::string base64_encode(const uint8_t* data, size_t size);
+std::vector<uint8_t> base64_decode(const std::string& in);
 
 }  // namespace voxcpm
 

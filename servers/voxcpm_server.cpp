@@ -41,6 +41,8 @@ struct RequestContext {
     double speed = 1.0;
     bool sse = false;
     int max_attempts;
+    std::string continue_audio;
+    std::string transcript;
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -203,6 +205,24 @@ RequestContext parse_request(const json& body, const Options& options) {
                 default:
                     ctx.input = "(" + instructions + ")" + ctx.input;
             }
+        }
+    }
+
+    if (body.contains("continue_audio") || body.contains("transcript")) {
+        if (body.contains("continue_audio")) {
+            if (body["continue_audio"].is_null()) {
+                fail("`continue_audio` was specified with null value");
+            }
+            ctx.continue_audio = body["continue_audio"].get<std::string>();
+        }
+        if (body.contains("transcript")) {
+            if (body["transcript"].is_null()) {
+                fail("`transcript` was specified with null value");
+            }
+            ctx.transcript = body["transcript"].get<std::string>();
+        }
+        if (ctx.continue_audio.empty() || ctx.transcript.empty()) {
+            fail("`continue_audio` and `transcript` can only be used together");
         }
     }
 
@@ -401,13 +421,11 @@ int main(int argc, char** argv) {
                 const auto file = req.form.get_file("audio");
                 const DecodedAudio decoded = decode_audio_from_memory(file.content.data(), file.content.size());
                 const std::vector<float> mono = convert_to_mono(decoded);
-                PromptFeatures features;
-                if (text.empty()) {
-                    features = core.encode_reference_audio(id, mono, decoded.sample_rate);
-                } else {
-                    features = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
-                }
-                voice_store.save_voice(features);
+                PromptFeatures prompt_data = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
+                PromptFeatures ref_data = core.encode_reference_audio(id, mono, decoded.sample_rate);
+                prompt_data.reference_feat = std::move(ref_data.reference_feat);
+                prompt_data.reference_audio_length = ref_data.reference_audio_length;
+                voice_store.save_voice(prompt_data);
                 respond_json(res, 201, metadata_to_json(voice_store.load_metadata(id)));
             } catch (const std::exception& e) {
                 respond_error(res, 400, e.what(), "invalid_request_error", "bad_request");
@@ -475,6 +493,37 @@ int main(int argc, char** argv) {
                         respond_error(res, 400, "Unknown voice id.", "invalid_request_error", "voice_not_found");
                         return;
                     }
+                    if (prompt.prompt_feat.empty() && prompt.reference_feat.empty()) {
+                        respond_error(res, 400, "Registered voice does not contain any features!", "server_error", "bad_voice_data");
+                        return;
+                    }
+                }
+
+                if (!ctx.continue_audio.empty()) {
+                    std::vector<uint8_t> audio_file_data;
+                    audio_file_data = base64_decode(ctx.continue_audio);
+                    if (audio_file_data.empty()) {
+                        respond_error(res, 400, "Failed to decode audio continuation file.", "invalid_request_error", "bad_audio_file");
+                        return;
+                    }
+                    const DecodedAudio audio_data = decode_audio_from_memory(audio_file_data.data(), audio_file_data.size());
+                    const std::vector<float> mono_waveform = convert_to_mono(audio_data);
+                    PromptFeatures extracted_features = core.encode_prompt_audio(ctx.voice_id, "", mono_waveform, audio_data.sample_rate);
+                    if (extracted_features.prompt_feat.empty()) {
+                        respond_error(res, 400, "Failed to parse audio data/features from continuation file.", "invalid_request_error", "bad_audio_file");
+                        return;
+                    }
+                    if (prompt.reference_feat.empty()) {
+                        // Generate reference_feat for voices previously saved with only prompt_feat.
+                        // To do: save the newly generated reference_feat so it does not need to be regenerated each time.
+                        std::cerr << "No reference_feat in saved voice data! Creating reference_feat from prompt_feat.\n";
+                        prompt.reference_feat = core.convert_prompt_feat_to_reference_feat(prompt.prompt_feat);
+                        prompt.reference_audio_length = prompt.prompt_audio_length;
+                    }
+                    prompt.prompt_feat = std::move(extracted_features.prompt_feat);
+                    prompt.prompt_audio_length = extracted_features.prompt_audio_length;
+
+                    prompt.prompt_text = ctx.transcript;
                 }
 
                 if (ctx.sse) {
@@ -516,6 +565,7 @@ int main(int argc, char** argv) {
                 SynthesisRequest request;
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
+                request.has_uploaded_prompt_audio = !ctx.continue_audio.empty();
                 request.max_decode_steps = options.max_decode_steps;
                 request.retry_badcase = (ctx.max_attempts == 1 ? false : true);
                 request.retry_badcase_max_times = std::min(ctx.max_attempts, options.max_attempts);
