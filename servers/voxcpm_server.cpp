@@ -189,19 +189,19 @@ RequestContext parse_request(const json& body, const Options& options) {
     if (body.contains("instructions") && !body["instructions"].is_null()) {
         const std::string instructions = body["instructions"].is_string() ? body["instructions"].get<std::string>() : "";
         if (!instructions.empty()) {
-            if (options.model_name.length() < 7 || options.model_name.compare(0, 6, "voxcpm-")) {
-                throw std::invalid_argument("`model-name` has an unexpected value.");
+            if (options.model_name.compare(0, 7, "voxcpm-")) {
+                fail("`model` has an unexpected value. `instructions` must not be specified.");
             }
             switch (options.model_name[7]) {
                 case 0:
                 case 1:
-                    throw std::invalid_argument("`instructions` are not supported by VoxCPM versions less than 2");
+                    fail("`instructions` are not supported by VoxCPM versions less than 2");
             }
 
             switch (static_cast<char32_t>(ctx.input[0])) {
                 case '(':
                 case U'（':
-                    throw std::invalid_argument("instructions can not be provided both as a J.SON field and in the input text string");
+                    fail("instructions can not be provided both as a J.SON field and in the input text string");
                 default:
                     ctx.input = "(" + instructions + ")" + ctx.input;
             }
