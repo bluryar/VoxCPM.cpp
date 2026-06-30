@@ -1010,10 +1010,10 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             // Combined Mode: voice style + audio to continue.
             // Reference for timbre + prompt for context.
             std::cerr << "Mode: Combined (voice + continuation)\n";
-            mode_prompt.reference_feat = request.prompt.reference_feat;
-            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
             mode_prompt.prompt_feat = request.prompt.prompt_feat;
             mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+            mode_prompt.reference_feat = request.prompt.reference_feat;
+            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
 
             // Strip control prefix, if present, from the script to be spoken.
             auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
