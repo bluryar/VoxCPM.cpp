@@ -1015,17 +1015,14 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             mode_prompt.prompt_feat = request.prompt.prompt_feat;
             mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
 
-            {
-                // Strip control prefix, if present, from the script to be spoken.
-                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
-                if (stripped) effective_text = stripped_text;
-            }
-            {
-                // Strip control prefix, if present, from the reference (prompt_feat) transcript.
-                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.prompt.prompt_text);
-                if (stripped) mode_prompt.prompt_text = stripped_text;
-                else mode_prompt.prompt_text = request.prompt.prompt_text;
-            }
+            // Strip control prefix, if present, from the script to be spoken.
+            auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+            if (stripped) effective_text = stripped_text;
+
+            // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+            std::tie(stripped_text, stripped) = strip_hifi_control_prefix(request.prompt.prompt_text);
+            if (stripped) mode_prompt.prompt_text = stripped_text;
+            else mode_prompt.prompt_text = request.prompt.prompt_text;
         } else if (test_for_control_prefix(request.text)) {
             // Controllable Voice Cloning: voice + control instructions.
             std::cerr << "Mode: Controllable Voice Cloning\n";
@@ -1049,17 +1046,14 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             mode_prompt.prompt_feat = request.prompt.prompt_feat;
             mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
 
-            {
-                // Strip control prefix, if present, from the script to be spoken.
-                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
-                if (stripped) effective_text = stripped_text;
-            }
-            {
-                // Strip control prefix, if present, from the reference (prompt_feat) transcript.
-                const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.prompt.prompt_text);
-                if (stripped) mode_prompt.prompt_text = stripped_text;
-                else mode_prompt.prompt_text = request.prompt.prompt_text;
-            }
+            // Strip control prefix, if present, from the script to be spoken.
+            auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+            if (stripped) effective_text = stripped_text;
+
+            // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+            std::tie(stripped_text, stripped) = strip_hifi_control_prefix(request.prompt.prompt_text);
+            if (stripped) mode_prompt.prompt_text = stripped_text;
+            else mode_prompt.prompt_text = request.prompt.prompt_text;
         }   // else: Voice Design Mode: generate speech based on any (optional) control instructions.
     }
     std::cerr << "effective_text: \"" << effective_text << '"' << '\n';
