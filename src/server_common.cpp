@@ -1008,7 +1008,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         }
         if (request.has_uploaded_prompt_audio) {
             // Combined Mode: voice style + audio to continue.
-            // Reference for timbre + prompt for context (best cloning similarity).
+            // Reference for timbre + prompt for context.
             std::cerr << "Mode: Combined (voice + continuation)\n";
             mode_prompt.reference_feat = request.prompt.reference_feat;
             mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
@@ -1028,25 +1028,21 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
         } else if (test_for_control_prefix(request.text)) {
             // Controllable Voice Cloning: voice + control instructions.
-            // Isolated voice cloning from a reference clip.
             std::cerr << "Mode: Controllable Voice Cloning\n";
             mode_prompt.reference_feat = request.prompt.prompt_feat;
             mode_prompt.reference_audio_length = request.prompt.prompt_audio_length;
         } else {
             // Hi-Fi Mode: only voice (use transcript from registration).
-            // Seamless continuation from prompt audio.
             std::cerr << "Mode: Hi-Fi\n";
             mode_prompt.prompt_feat = request.prompt.prompt_feat;
             mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
             mode_prompt.prompt_text = request.prompt.prompt_text;
-            // I am not sure whether reference_feat should also be used in this mode.
             mode_prompt.reference_feat = request.prompt.reference_feat;
             mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
             // No need to strip control prefix-- we already tested out the possibility of one.
         }
     } else {
-        // No voice specified.
-        // Zero-shot / text-only synthesis.
+        // No voice specified-- zero-shot / text-only synthesis.
         if (request.has_uploaded_prompt_audio) {
             // Continuation Mode.
             std::cerr << "Mode: Continuation\n";
@@ -1087,7 +1083,6 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         active_features_ptr = has_prompt_audio ? &mode_prompt.prompt_feat : &mode_prompt.reference_feat;
         std::cerr << "Using feature set: " << (has_prompt_audio ? "prompt_feat\n" : "reference_feat\n");
     }
-    // The pointer could be used throughout the function if definitions for build_decode_feature_* are adjusted.
     const std::vector<float>& active_features = *active_features_ptr;
 
 
