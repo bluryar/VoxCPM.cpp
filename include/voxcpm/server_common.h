@@ -108,6 +108,13 @@ private:
                                                 int sample_rate);
     SynthesisResult synthesize_locked(const SynthesisRequest& request);
 
+    void prepare_combined_features(std::vector<float>& combined_features,
+                                  const int patch_size_value,
+                                  const int feat_dim_value,
+                                  PromptFeatures& mode_prompt,
+                                  const std::string& effective_text,
+                                  int& effective_prompt_audio_length);
+
     std::string model_path_;
     BackendType backend_type_;
     int threads_ = 4;

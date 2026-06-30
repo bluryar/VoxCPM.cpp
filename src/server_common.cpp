@@ -919,6 +919,32 @@ SynthesisResult VoxCPMServiceCore::synthesize(const SynthesisRequest& request) {
     return synthesize_locked(request);
 }
 
+inline void VoxCPMServiceCore::prepare_combined_features(std::vector<float>& combined_features,
+                          const int patch_size_value,
+                          const int feat_dim_value,
+                          PromptFeatures& mode_prompt,
+                          const std::string& effective_text,
+                          int& effective_prompt_audio_length) {
+        // Combined Mode: construct [Reference] + [Text Silence] + [Prompt] timeline
+        const size_t frame_stride = static_cast<size_t>(patch_size_value) * feat_dim_value;
+        const size_t ref_size = mode_prompt.reference_audio_length * frame_stride;
+        const size_t prompt_size = mode_prompt.prompt_audio_length * frame_stride;
+
+        // Match build_conditioning's token count: (prompt_text + target_text) + audio_start_token
+        const std::string main_text = mode_prompt.prompt_text + effective_text;
+        const int text_frames = static_cast<int>(split_tokenizer_->encode(main_text, false).size()) + 1;
+        const size_t silence_size = static_cast<size_t>(text_frames) * frame_stride;
+
+        combined_features.reserve(ref_size + silence_size + prompt_size);
+        combined_features.insert(combined_features.end(), mode_prompt.reference_feat.begin(), mode_prompt.reference_feat.end());
+        combined_features.insert(combined_features.end(), silence_size, 0.0f);
+        combined_features.insert(combined_features.end(), mode_prompt.prompt_feat.begin(), mode_prompt.prompt_feat.end());
+
+        // +2 accounts for reference start/end token zero-frames added by _make_ref_prefix
+        effective_prompt_audio_length = mode_prompt.reference_audio_length + 2 + text_frames + mode_prompt.prompt_audio_length;
+        std::cerr << "[tts] Combined Mode active features length: " << effective_prompt_audio_length << "\n";
+}
+
 SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& request) {
     if (request.text.empty()) {
         fail("Text input must not be empty");
@@ -1043,7 +1069,27 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     std::cerr << "effective_text: \"" << effective_text << '"' << '\n';
     const bool has_prompt_audio = mode_prompt.prompt_audio_length > 0;
     const bool has_reference_audio = mode_prompt.reference_audio_length > 0;
-    const std::vector<float>& active_features = has_prompt_audio ? mode_prompt.prompt_feat : mode_prompt.reference_feat;
+
+
+    std::vector<float> combined_features;
+    int effective_prompt_audio_length = mode_prompt.prompt_audio_length;
+
+    const std::vector<float>* active_features_ptr = nullptr;
+    if (has_prompt_audio && has_reference_audio) {
+        prepare_combined_features(combined_features,
+                                  patch_size_value,
+                                  feat_dim_value,
+                                  mode_prompt,
+                                  effective_text,
+                                  effective_prompt_audio_length);
+        active_features_ptr = &combined_features;
+    } else {
+        active_features_ptr = has_prompt_audio ? &mode_prompt.prompt_feat : &mode_prompt.reference_feat;
+        std::cerr << "Using feature set: " << (has_prompt_audio ? "prompt_feat\n" : "reference_feat\n");
+    }
+    // The pointer could be used throughout the function if definitions for build_decode_feature_* are adjusted.
+    const std::vector<float>& active_features = *active_features_ptr;
+
 
     bool retry_badcase = request.retry_badcase;
     if (retry_badcase && request.chunk_callback) {
@@ -1058,7 +1104,6 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
               << " reference_audio_length=" << mode_prompt.reference_audio_length
               << " prompt_feat_size=" << active_features.size()
               << "\n";
-    const int prompt_audio_length = mode_prompt.prompt_audio_length;
     const int target_text_token_count =
         std::max<int>(1, static_cast<int>(split_tokenizer_->tokenize(effective_text).size()));
     const int natural_max_len =
@@ -1093,14 +1138,14 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         const size_t frame_stride = static_cast<size_t>(patch_size_value) * feat_dim_value;
         const int context_frames =
             (has_prompt_audio && request.streaming_prefix_len > 1)
-                ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                ? std::min(request.streaming_prefix_len - 1, effective_prompt_audio_length)
                 : 0;
         const bool use_fallback_streaming_window = request.chunk_callback && !use_output_pool_timeline;
         if (use_fallback_streaming_window) {
             stream_recent_frames.reserve(static_cast<size_t>(request.streaming_prefix_len) * frame_stride);
         }
         if (use_fallback_streaming_window && context_frames > 0) {
-            const size_t context_offset = static_cast<size_t>(prompt_audio_length - context_frames) * frame_stride;
+            const size_t context_offset = static_cast<size_t>(effective_prompt_audio_length - context_frames) * frame_stride;
             stream_recent_frames.insert(stream_recent_frames.end(),
                                         active_features.begin() + static_cast<std::ptrdiff_t>(context_offset),
                                         active_features.end());
@@ -1173,7 +1218,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
         }
         const int generated_frames = use_output_pool_timeline
-                                         ? std::max(0, state.audio_frame_count - prompt_audio_length)
+                                         ? std::max(0, state.audio_frame_count - effective_prompt_audio_length)
                                          : static_cast<int>(generated_steps.size() / frame_stride);
         std::cerr << "[tts] decode loop done generated_frames="
                   << generated_frames
@@ -1195,7 +1240,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
 
         int prepended_context_frames = 0;
         const int total_frames = (has_prompt_audio && request.streaming_prefix_len > 1
-                                      ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                                      ? std::min(request.streaming_prefix_len - 1, effective_prompt_audio_length)
                                       : 0) +
                                  generated_frames;
         const int total_patches = total_frames * patch_size_value;
@@ -1210,11 +1255,11 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         const int decode_stateful_chunk_frames =
             stateful_audio_decode_chunk_frames(audio_vae_, patch_size_value);
         if (use_output_pool_timeline &&
-            state.audio_frame_count >= prompt_audio_length + generated_frames) {
+            state.audio_frame_count >= effective_prompt_audio_length + generated_frames) {
             const int frame_offset =
-                std::max(0, prompt_audio_length - std::min(request.streaming_prefix_len - 1, prompt_audio_length));
+                std::max(0, effective_prompt_audio_length - std::min(request.streaming_prefix_len - 1, effective_prompt_audio_length));
             prepended_context_frames = has_prompt_audio && request.streaming_prefix_len > 1
-                                           ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                                           ? std::min(request.streaming_prefix_len - 1, effective_prompt_audio_length)
                                            : 0;
             if (use_stateful_final_audio_decode) {
                 waveform = decode_audio_stateful_from_output_pool(audio_vae_,
@@ -1244,7 +1289,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         } else {
             if (use_stateful_final_audio_decode) {
                 const std::vector<float> decode_frames = build_decode_feature_sequence(active_features,
-                                                                                       prompt_audio_length,
+                                                                                       effective_prompt_audio_length,
                                                                                        generated_steps,
                                                                                        request.streaming_prefix_len,
                                                                                        patch_size_value,
@@ -1265,7 +1310,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
             if (waveform.empty()) {
                 latent = build_decode_latent_sequence(active_features,
-                                                      prompt_audio_length,
+                                                      effective_prompt_audio_length,
                                                       generated_steps,
                                                       request.streaming_prefix_len,
                                                       patch_size_value,
