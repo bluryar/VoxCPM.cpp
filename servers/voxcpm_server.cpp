@@ -499,6 +499,8 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                SynthesisRequest request;
+
                 if (!ctx.continue_audio.empty()) {
                     std::vector<uint8_t> audio_file_data;
                     audio_file_data = base64_decode(ctx.continue_audio);
@@ -507,8 +509,12 @@ int main(int argc, char** argv) {
                         return;
                     }
                     const DecodedAudio audio_data = decode_audio_from_memory(audio_file_data.data(), audio_file_data.size());
-                    const std::vector<float> mono_waveform = convert_to_mono(audio_data);
-                    PromptFeatures extracted_features = core.encode_prompt_audio(ctx.voice_id, "", mono_waveform, audio_data.sample_rate);
+                    const std::vector<float> mono_waveform = resample_audio_to_rate(
+                        convert_to_mono(audio_data),
+                        audio_data.sample_rate,
+                        core.sample_rate()
+                    );
+                    PromptFeatures extracted_features = core.encode_prompt_audio(ctx.voice_id, "", mono_waveform, core.sample_rate());
                     if (extracted_features.prompt_feat.empty()) {
                         respond_error(res, 400, "Failed to parse audio data/features from continuation file.", "invalid_request_error", "bad_audio_file");
                         return;
@@ -562,7 +568,6 @@ int main(int argc, char** argv) {
                     return;
                 }
 
-                SynthesisRequest request;
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
                 request.has_uploaded_prompt_audio = !ctx.continue_audio.empty();
