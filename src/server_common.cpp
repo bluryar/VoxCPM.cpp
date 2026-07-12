@@ -935,14 +935,15 @@ inline void VoxCPMServiceCore::prepare_combined_features(std::vector<float>& com
         const int text_frames = static_cast<int>(split_tokenizer_->encode(main_text, false).size()) + 1;
         const size_t silence_size = static_cast<size_t>(text_frames) * frame_stride;
 
-        combined_features.reserve(ref_size + silence_size + prompt_size);
+        combined_features.reserve(ref_size + silence_size + prompt_size + (2 * frame_stride));
+        combined_features.insert(combined_features.end(), frame_stride, 0.0f);  // Zero-frame.
         combined_features.insert(combined_features.end(), mode_prompt.reference_feat.begin(), mode_prompt.reference_feat.end());
+        combined_features.insert(combined_features.end(), frame_stride, 0.0f);  // Zero-frame.
         combined_features.insert(combined_features.end(), silence_size, 0.0f);
         combined_features.insert(combined_features.end(), mode_prompt.prompt_feat.begin(), mode_prompt.prompt_feat.end());
 
-        // +2 accounts for reference start/end token zero-frames added by _make_ref_prefix
+        // +2 accounts for start/end zero-frames encapsulating reference_feat.
         effective_prompt_audio_length = mode_prompt.reference_audio_length + 2 + text_frames + mode_prompt.prompt_audio_length;
-        std::cerr << "[tts] Combined Mode active features length: " << effective_prompt_audio_length << "\n";
 }
 
 SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& request) {
