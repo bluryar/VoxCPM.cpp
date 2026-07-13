@@ -1038,6 +1038,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             mode_prompt.prompt_feat = request.prompt.prompt_feat;
             mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
             mode_prompt.prompt_text = request.prompt.prompt_text;
+            // It is ok if reference_feat is empty and audio_length is zero.
             mode_prompt.reference_feat = request.prompt.reference_feat;
             mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
             // No need to strip control prefix-- we already tested out the possibility of one.
