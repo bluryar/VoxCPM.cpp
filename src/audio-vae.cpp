@@ -1017,7 +1017,13 @@ ggml_tensor* AudioVAE::encode(VoxCPMContext& ctx,
 }
 
 bool AudioVAE::supports_streaming_decode(const VoxCPMBackend& backend) const {
-    return backend.type() == BackendType::CUDA && config_.depthwise && !config_.use_noise_block;
+    switch (backend.type()) {
+        case BackendType::CUDA   :
+        case BackendType::Vulkan :
+            break;
+        default: return false;
+    }
+    return config_.depthwise && !config_.use_noise_block;
 }
 
 bool AudioVAE::initialize_streaming_decode_state(VoxCPMBackend& backend,
