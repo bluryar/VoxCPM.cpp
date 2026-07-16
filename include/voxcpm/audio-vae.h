@@ -179,7 +179,8 @@ private:
                                int kernel_size,
                                int stride,
                                int dilation,
-                               int padding) const;
+                               int padding,
+                               int output_padding) const;
 
     ggml_tensor* causal_conv1d_stateful(ggml_context* ctx,
                                         ggml_tensor* x,
@@ -189,6 +190,7 @@ private:
                                         int stride,
                                         int dilation,
                                         int padding,
+                                        int output_padding,
                                         AudioVAEStreamingDecodeState& state,
                                         const std::string& state_name) const;
 
