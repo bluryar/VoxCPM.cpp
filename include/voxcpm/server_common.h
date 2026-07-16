@@ -81,7 +81,7 @@ class VoxCPMServiceCore {
 public:
     VoxCPMServiceCore(std::string model_path, BackendType backend_type, int threads);
 
-    void load();
+    void load(const ModelVersion override_version = ModelVersion::Unknown);
     PromptFeatures encode_prompt_audio(const std::string& id,
                                       const std::string& prompt_text,
                                       const std::vector<float>& mono_audio,
@@ -93,6 +93,7 @@ public:
     std::vector<float> convert_prompt_feat_to_reference_feat(
                                       const std::vector<float>& prompt_feat);
 
+    ModelVersion model_version() const;
     int sample_rate() const;
     int patch_size() const;
     int feat_dim() const;

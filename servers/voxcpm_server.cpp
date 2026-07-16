@@ -22,7 +22,7 @@ struct Options {
     std::string host = "127.0.0.1";
     int port = 8080;
     std::string model_path;
-    std::string model_name;
+    ModelVersion model_version_override = ModelVersion::Unknown;
     std::string voice_dir;
     std::string api_key;
     BackendType backend = BackendType::CPU;
@@ -75,7 +75,8 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--model-path") {
             options.model_path = require_value("--model-path");
         } else if (arg == "--model-name") {
-            options.model_name = require_value("--model-name");
+            options.model_version_override = parse_model_version_from_str(require_value("--model-name"));
+            if (options.model_version_override == ModelVersion::Unknown) fail("Invalid model string.");
         } else if (arg == "--voice-dir") {
             options.voice_dir = require_value("--voice-dir");
         } else if (arg == "--backend") {
@@ -96,7 +97,7 @@ Options parse_args(int argc, char** argv) {
             options.max_decode_steps = std::stoi(require_value("--max-decode-steps"));
         } else if (arg == "--help" || arg == "-h") {
             std::cout
-                << "Usage: voxcpm-server --model-path MODEL.gguf --model-name NAME --voice-dir DIR [options]\n"
+                << "Usage: voxcpm-server --model-path MODEL.gguf --voice-dir DIR [options]\n"
                 << "Options:\n"
                 << "  --host HOST           Default: 127.0.0.1\n"
                 << "  --port PORT           Default: 8080\n"
@@ -107,6 +108,7 @@ Options parse_args(int argc, char** argv) {
                 << "  --max-decode-steps N  Override per-request decode step cap, 0 keeps backend default\n"
                 << "  --output-sample-rate HZ  Optional output resample rate before encoding\n"
                 << "  --api-key KEY         Required unless --disable-auth\n"
+                << "  --model-name NAME     Override detection of model version based on signature in model file.\n"
                 << "  --disable-auth\n";
             std::exit(0);
         } else {
@@ -115,7 +117,6 @@ Options parse_args(int argc, char** argv) {
     }
 
     if (options.model_path.empty()) fail("--model-path is required");
-    if (options.model_name.empty()) fail("--model-name is required");
     if (options.voice_dir.empty()) fail("--voice-dir is required");
     if (!options.disable_auth && options.api_key.empty()) fail("--api-key is required unless --disable-auth is set");
     if (options.port < 1 || options.port > 65535) fail("--port must be between 1 and 65535");
@@ -170,13 +171,16 @@ bool authorize(const Options& options, const httplib::Request& req, httplib::Res
     return true;
 }
 
-RequestContext parse_request(const json& body, const Options& options) {
+RequestContext parse_request(const json& body, const Options& options,
+                             const ModelVersion running_model_version) {
     RequestContext ctx;
     if (!body.contains("model") || !body["model"].is_string()) {
         fail("`model` is required and must be a string");
     }
-    if (body["model"].get<std::string>() != options.model_name) {
-        fail("Requested model does not match the configured server model");
+    if (body.contains("model")) {
+        auto v = parse_model_version_from_str(body["model"].get<std::string>());
+        if (v == ModelVersion::Unknown) fail("Requested invalid model (string must match label)");
+        if (v != running_model_version) fail("Requested model does not match the configured server model");
     }
     if (!body.contains("input") || !body["input"].is_string()) {
         fail("`input` is required and must be a string");
@@ -189,12 +193,7 @@ RequestContext parse_request(const json& body, const Options& options) {
     if (body.contains("instructions") && !body["instructions"].is_null()) {
         const std::string instructions = body["instructions"].is_string() ? body["instructions"].get<std::string>() : "";
         if (!instructions.empty()) {
-            if (options.model_name.compare(0, 7, "voxcpm-")) {
-                fail("`model` has an unexpected value. `instructions` must not be specified.");
-            }
-            switch (options.model_name[7]) {
-                case 0:
-                case 1:
+            if (running_model_version < ModelVersion::v2_0) {
                     fail("`instructions` are not supported by VoxCPM versions less than 2");
             }
 
@@ -380,7 +379,7 @@ int main(int argc, char** argv) {
         const Options options = parse_args(argc, argv);
         ensure_voice_dir_exists(options.voice_dir);
         VoxCPMServiceCore core(options.model_path, options.backend, options.threads);
-        core.load();
+        core.load(options.model_version_override);
         VoiceStore voice_store(options.voice_dir);
         BoundedSynthesisQueue queue(options.max_queue);
 
@@ -466,7 +465,7 @@ int main(int argc, char** argv) {
 
             try {
                 const json body = json::parse(req.body);
-                const RequestContext ctx = parse_request(body, options);
+                const RequestContext ctx = parse_request(body, options, core.model_version());
                 const int response_sample_rate = effective_output_sample_rate(options, core.sample_rate());
 
                 if (!audio_response_format_supported(ctx.format)) {

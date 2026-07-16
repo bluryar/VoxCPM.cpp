@@ -791,7 +791,7 @@ VoxCPMServiceCore::VoxCPMServiceCore(std::string model_path, BackendType backend
       backend_type_(backend_type),
       threads_(threads) {}
 
-void VoxCPMServiceCore::load() {
+void VoxCPMServiceCore::load(const ModelVersion override_version) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (loaded_) {
         return;
@@ -809,7 +809,7 @@ void VoxCPMServiceCore::load() {
     if (!runtime_.load_from_store(store_, *backend_)) {
         fail("Failed to initialize VoxCPM runtime from GGUF");
     }
-    if (!audio_vae_.load_from_store(store_)) {
+    if (!audio_vae_.load_from_store(store_, override_version)) {
         fail("Failed to initialize AudioVAE from GGUF");
     }
 
@@ -1368,6 +1368,9 @@ std::vector<float> VoxCPMServiceCore::convert_prompt_feat_to_reference_feat(cons
     return ref_feat;
 }
 
+ModelVersion VoxCPMServiceCore::model_version() const {
+    return audio_vae_.config().model_version;
+}
 int VoxCPMServiceCore::sample_rate() const {
     return audio_vae_.config().output_sample_rate();
 }

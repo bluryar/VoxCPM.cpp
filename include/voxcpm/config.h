@@ -19,6 +19,39 @@ namespace voxcpm {
 // AudioVAE Configuration
 // =============================================================================
 
+// ModelVersion labels must be ordered in the same direction as the enum values (presumably ascending).
+enum class ModelVersion {
+    Unknown,
+    v0_5,
+    v1_5,
+    v2_0
+};
+// Parse in descending order, since newer versions are more likely to be used.
+inline ModelVersion parse_model_version_from_str(const std::string& str) {
+    // Using wide string because we already include that library.
+    std::wstring wstr(str.length() + 1, L'\0');
+    mbstowcs(&wstr[0], str.c_str(), str.length()+1);
+    auto wcstr = wstr.c_str();
+    // This format was used in the 2.0 model file:
+    if (!wcscasecmp(wcstr, L"VoxCPM2"))     return ModelVersion::v2_0;
+    // This format was used by the `--model-name` parameter:
+    if (!wcscasecmp(wcstr, L"VoxCPM-2"))    return ModelVersion::v2_0;
+    if (!wcscasecmp(wcstr, L"VoxCPM-1.5"))  return ModelVersion::v1_5;
+    if (!wcscasecmp(wcstr, L"VoxCPM-0.5B")) return ModelVersion::v0_5;
+
+    // Needs <algorithm>:
+    /*
+     * std::string lower = str;
+     * std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+     * if (lower == "voxcpm2")     return ModelVersion::v2_0;
+     * if (lower == "voxcpm-2")    return ModelVersion::v2_0;
+     * if (lower == "voxcpm-1.5")  return ModelVersion::v1_5;
+     * if (lower == "voxcpm-0.5b") return ModelVersion::v0_5;
+    */
+
+    return ModelVersion::Unknown;
+}
+
 /**
  * @brief AudioVAE Configuration
  *
@@ -32,6 +65,9 @@ namespace voxcpm {
  * - decoder_rates: Upsampling factors for each decoder block (reverse order)
  */
 struct AudioVAEConfig {
+    // Model version
+    ModelVersion model_version = ModelVersion::Unknown;
+
     // Dimensions
     int encoder_dim = 128;      // Upstream torch default encoder channel dimension
     int latent_dim = 64;        // Latent space dimension

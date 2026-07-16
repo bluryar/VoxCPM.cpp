@@ -139,8 +139,10 @@ public:
     bool load_from_gguf(const std::string& gguf_path,
                         VoxCPMContext& weight_ctx,
                         VoxCPMContext& graph_ctx,
-                        VoxCPMBackend& backend);
-    bool load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store);
+                        VoxCPMBackend& backend,
+                        const ModelVersion override_version = ModelVersion::Unknown);
+    bool load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store,
+                         const ModelVersion override_version = ModelVersion::Unknown);
 
     std::vector<float> preprocess(std::vector<float> audio_data, int sample_rate = -1) const;
 

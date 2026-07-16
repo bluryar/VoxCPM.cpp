@@ -523,7 +523,8 @@ bool AudioVAE::load_decoder_weights(ggml_context* ggml_ctx_ptr) {
 bool AudioVAE::load_from_gguf(const std::string& gguf_path,
                               VoxCPMContext& weight_ctx,
                               VoxCPMContext& graph_ctx,
-                              VoxCPMBackend& backend) {
+                              VoxCPMBackend& backend,
+                              const ModelVersion override_version) {
     VOXCPM_UNUSED(weight_ctx);
     VOXCPM_UNUSED(graph_ctx);
 
@@ -531,15 +532,22 @@ bool AudioVAE::load_from_gguf(const std::string& gguf_path,
     if (!store->load_from_file(gguf_path, backend)) {
         return false;
     }
-    return load_from_store(store);
+    return load_from_store(store, override_version);
 }
 
-bool AudioVAE::load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store) {
+bool AudioVAE::load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store,
+                               const ModelVersion override_version) {
     if (!store || !store->owns_storage()) {
         return false;
     }
 
     shared_store_ = store;
+
+    std::string str_buff;
+    if (override_version == ModelVersion::Unknown) {
+        store->get_string("general.name", str_buff);
+        if ((config_.model_version = parse_model_version_from_str(str_buff)) == ModelVersion::Unknown) return false;
+    } else config_.model_version = override_version;
 
     uint32_t u32 = 0;
     const bool has_encoder_dim = store->get_u32("voxcpm_audio_vae_config_encoder_dim", u32);
