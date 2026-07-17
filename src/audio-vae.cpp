@@ -728,8 +728,7 @@ ggml_tensor* AudioVAE::causal_conv1d_dw_stateful(ggml_context* ctx,
             0
         );
 
-        const int64_t kernel = weight->ne[0];
-        ggml_tensor* result = conv1d_mul_mat_impl(ctx, weight, x_full, static_cast<int>(kernel), stride, dilation);
+        ggml_tensor* result = ggml_conv_1d_dw(ctx, weight, x_full, stride, 0, dilation);
 
         if (bias) result = ggml_add(ctx, result, reshape_bias_3d(ctx, bias));
 
