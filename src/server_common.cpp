@@ -76,6 +76,14 @@ size_t skip_ascii_whitespace(const std::string& text, size_t pos) {
     return pos;
 }
 
+static inline bool test_for_control_prefix(const std::string& text) {
+    const size_t start = skip_ascii_whitespace(text, 0);
+    if (
+               text.compare(start, 1, "(") == 0
+            || text.compare(start, 3, "（") == 0
+    ) return true;
+    return false;
+}
 std::pair<std::string, bool> strip_hifi_control_prefix(const std::string& text) {
     const size_t start = skip_ascii_whitespace(text, 0);
     if (start >= text.size()) {
@@ -577,6 +585,7 @@ bool should_use_output_pool_timeline(const VoxCPMDecodeState& state, bool has_re
 
 std::vector<float> build_decode_feature_sequence(const std::vector<float>& prompt_feat,
                                                  int prompt_audio_length,
+                                                 int total_audio_length,
                                                  const std::vector<float>& generated_steps,
                                                  int streaming_prefix_len,
                                                  int patch_size,
@@ -591,7 +600,8 @@ std::vector<float> build_decode_feature_sequence(const std::vector<float>& promp
     std::vector<float> decode_frames;
     decode_frames.reserve(static_cast<size_t>(context_frames) * frame_stride + generated_steps.size());
     if (context_frames > 0) {
-        const size_t context_offset = static_cast<size_t>(prompt_audio_length - context_frames) * frame_stride;
+        // Seed VAE with prompt audio.
+        const size_t context_offset = static_cast<size_t>(total_audio_length - context_frames) * frame_stride;
         decode_frames.insert(decode_frames.end(),
                              prompt_feat.begin() + static_cast<std::ptrdiff_t>(context_offset),
                              prompt_feat.end());
@@ -606,6 +616,7 @@ std::vector<float> build_decode_feature_sequence(const std::vector<float>& promp
 
 std::vector<float> build_decode_latent_sequence(const std::vector<float>& prompt_feat,
                                                 int prompt_audio_length,
+                                                int total_audio_length,
                                                 const std::vector<float>& generated_steps,
                                                 int streaming_prefix_len,
                                                 int patch_size,
@@ -642,7 +653,7 @@ std::vector<float> build_decode_latent_sequence(const std::vector<float>& prompt
     };
 
     if (context_frames > 0) {
-        const size_t context_offset = static_cast<size_t>(prompt_audio_length - context_frames) * frame_stride;
+        const size_t context_offset = static_cast<size_t>(total_audio_length - context_frames) * frame_stride;
         write_patch_major_frames(prompt_feat.data() + static_cast<std::ptrdiff_t>(context_offset), context_frames, 0);
     }
     write_patch_major_frames(generated_steps.data(), generated_frames, context_frames);
@@ -780,7 +791,7 @@ VoxCPMServiceCore::VoxCPMServiceCore(std::string model_path, BackendType backend
       backend_type_(backend_type),
       threads_(threads) {}
 
-void VoxCPMServiceCore::load() {
+void VoxCPMServiceCore::load(const ModelVersion override_version) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (loaded_) {
         return;
@@ -798,7 +809,7 @@ void VoxCPMServiceCore::load() {
     if (!runtime_.load_from_store(store_, *backend_)) {
         fail("Failed to initialize VoxCPM runtime from GGUF");
     }
-    if (!audio_vae_.load_from_store(store_)) {
+    if (!audio_vae_.load_from_store(store_, override_version)) {
         fail("Failed to initialize AudioVAE from GGUF");
     }
 
@@ -911,6 +922,33 @@ SynthesisResult VoxCPMServiceCore::synthesize(const SynthesisRequest& request) {
     return synthesize_locked(request);
 }
 
+inline void VoxCPMServiceCore::prepare_combined_features(std::vector<float>& combined_features,
+                          const int patch_size_value,
+                          const int feat_dim_value,
+                          PromptFeatures& mode_prompt,
+                          const std::string& effective_text,
+                          int& effective_prompt_audio_length) {
+        // Combined Mode: construct [Reference] + [Text Silence] + [Prompt] timeline
+        const size_t frame_stride = static_cast<size_t>(patch_size_value) * feat_dim_value;
+        const size_t ref_size = mode_prompt.reference_audio_length * frame_stride;
+        const size_t prompt_size = mode_prompt.prompt_audio_length * frame_stride;
+
+        // Match build_conditioning's token count: (prompt_text + target_text) + audio_start_token
+        const std::string main_text = mode_prompt.prompt_text + effective_text;
+        const int text_frames = static_cast<int>(split_tokenizer_->encode(main_text, false).size()) + 1;
+        const size_t silence_size = static_cast<size_t>(text_frames) * frame_stride;
+
+        combined_features.reserve(ref_size + silence_size + prompt_size + (2 * frame_stride));
+        combined_features.insert(combined_features.end(), frame_stride, 0.0f);  // Zero-frame.
+        combined_features.insert(combined_features.end(), mode_prompt.reference_feat.begin(), mode_prompt.reference_feat.end());
+        combined_features.insert(combined_features.end(), frame_stride, 0.0f);  // Zero-frame.
+        combined_features.insert(combined_features.end(), silence_size, 0.0f);
+        combined_features.insert(combined_features.end(), mode_prompt.prompt_feat.begin(), mode_prompt.prompt_feat.end());
+
+        // +2 accounts for start/end zero-frames encapsulating reference_feat.
+        effective_prompt_audio_length = mode_prompt.reference_audio_length + 2 + text_frames + mode_prompt.prompt_audio_length;
+}
+
 SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& request) {
     if (request.text.empty()) {
         fail("Text input must not be empty");
@@ -933,20 +971,24 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     if (request.prompt.reference_audio_length < 0) {
         fail("Voice metadata is invalid: reference_audio_length must be >= 0");
     }
-    if (request.prompt.patch_size != patch_size_value) {
-        fail("Voice metadata patch_size does not match the loaded model");
-    }
-    if (request.prompt.feat_dim != feat_dim_value) {
-        fail("Voice metadata feat_dim does not match the loaded model");
-    }
-    if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
-        fail("Voice metadata is inconsistent with stored prompt features");
-    }
-    if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
-        fail("Voice metadata is inconsistent with stored reference features");
-    }
-    if ((request.prompt.prompt_audio_length == 0) != request.prompt.prompt_text.empty()) {
-        fail("Voice metadata is invalid: prompt_text must be provided iff prompt audio is present");
+    if (!request.has_uploaded_prompt_audio) {
+        if (!(request.prompt.prompt_feat.empty() && request.prompt.reference_feat.empty())) {
+            if (request.prompt.patch_size != patch_size_value) {
+                fail("Voice metadata patch_size does not match the loaded model");
+            }
+            if (request.prompt.feat_dim != feat_dim_value) {
+                fail("Voice metadata feat_dim does not match the loaded model");
+            }
+            if (request.prompt.prompt_feat.size() != expected_prompt_feat_size) {
+                fail("Voice metadata is inconsistent with stored prompt features");
+            }
+            if (request.prompt.reference_feat.size() != expected_reference_feat_size) {
+                fail("Voice metadata is inconsistent with stored reference features");
+            }
+        }
+        if ((request.prompt.prompt_audio_length == 0) != request.prompt.prompt_text.empty()) {
+            fail("Voice metadata is invalid: prompt_text must be provided iff prompt audio is present");
+        }
     }
     if (request.retry_badcase_max_times < 1) {
         fail("retry_badcase_max_times must be >= 1");
@@ -961,30 +1003,101 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     runtime_.reset_request_state();
     backend_->reset_request_state();
 
-    const bool has_prompt_audio = request.prompt.prompt_audio_length > 0;
-    const bool has_reference_audio = request.prompt.reference_audio_length > 0;
+    PromptFeatures mode_prompt; // Values should be initialised to zero.
     std::string effective_text = request.text;
-    if (has_prompt_audio) {
-        const auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
-        if (stripped) {
-            std::cerr << "[tts] Hi-Fi mode ignores control instructions; stripping the leading parenthesized prefix.\n";
-            effective_text = stripped_text;
+    if (!request.prompt.id.empty()) {
+        // Voice specified: it must be used.
+        if (request.prompt.reference_feat.empty() && request.prompt.prompt_feat.empty()) {
+            fail("Selected voice is unusable (missing features).");
         }
+        if (request.has_uploaded_prompt_audio) {
+            // Combined Mode: voice style + audio to continue.
+            // Reference for timbre + prompt for context.
+            std::cerr << "Mode: Combined (voice + continuation)\n";
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+            mode_prompt.reference_feat = request.prompt.reference_feat;
+            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
+
+            // Strip control prefix, if present, from the script to be spoken.
+            auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+            if (stripped) effective_text = stripped_text;
+
+            // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+            std::tie(stripped_text, stripped) = strip_hifi_control_prefix(request.prompt.prompt_text);
+            if (stripped) mode_prompt.prompt_text = stripped_text;
+            else mode_prompt.prompt_text = request.prompt.prompt_text;
+        } else if (test_for_control_prefix(request.text)) {
+            // Controllable Voice Cloning: voice + control instructions.
+            std::cerr << "Mode: Controllable Voice Cloning\n";
+            mode_prompt.reference_feat = request.prompt.prompt_feat;
+            mode_prompt.reference_audio_length = request.prompt.prompt_audio_length;
+        } else {
+            // Hi-Fi Mode: only voice (use transcript from registration).
+            std::cerr << "Mode: Hi-Fi\n";
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+            mode_prompt.prompt_text = request.prompt.prompt_text;
+            // It is ok if reference_feat is empty and audio_length is zero.
+            mode_prompt.reference_feat = request.prompt.reference_feat;
+            mode_prompt.reference_audio_length = request.prompt.reference_audio_length;
+            // No need to strip control prefix-- we already tested out the possibility of one.
+        }
+    } else {
+        // No voice specified-- zero-shot / text-only synthesis.
+        if (request.has_uploaded_prompt_audio) {
+            // Continuation Mode.
+            std::cerr << "Mode: Continuation\n";
+            mode_prompt.prompt_feat = request.prompt.prompt_feat;
+            mode_prompt.prompt_audio_length = request.prompt.prompt_audio_length;
+
+            // Strip control prefix, if present, from the script to be spoken.
+            auto [stripped_text, stripped] = strip_hifi_control_prefix(request.text);
+            if (stripped) effective_text = stripped_text;
+
+            // Strip control prefix, if present, from the reference (prompt_feat) transcript.
+            std::tie(stripped_text, stripped) = strip_hifi_control_prefix(request.prompt.prompt_text);
+            if (stripped) mode_prompt.prompt_text = stripped_text;
+            else mode_prompt.prompt_text = request.prompt.prompt_text;
+        }   // else: Voice Design Mode: generate speech based on any (optional) control instructions.
     }
+    std::cerr << "effective_text: \"" << effective_text << '"' << '\n';
+    const bool has_prompt_audio = mode_prompt.prompt_audio_length > 0;
+    const bool has_reference_audio = mode_prompt.reference_audio_length > 0;
+
+
+    std::vector<float> combined_features;
+    int effective_prompt_audio_length = mode_prompt.prompt_audio_length;
+
+    const std::vector<float>* active_features_ptr = nullptr;
+    if (has_prompt_audio && has_reference_audio) {
+        prepare_combined_features(combined_features,
+                                  patch_size_value,
+                                  feat_dim_value,
+                                  mode_prompt,
+                                  effective_text,
+                                  effective_prompt_audio_length);
+        active_features_ptr = &combined_features;
+    } else {
+        active_features_ptr = has_prompt_audio ? &mode_prompt.prompt_feat : &mode_prompt.reference_feat;
+        std::cerr << "Using feature set: " << (has_prompt_audio ? "prompt_feat\n" : "reference_feat\n");
+    }
+    const std::vector<float>& active_features = *active_features_ptr;
+
+
     bool retry_badcase = request.retry_badcase;
     if (retry_badcase && request.chunk_callback) {
         std::cerr << "[tts] retry_badcase is not supported with streaming chunks; disabling retries.\n";
         retry_badcase = false;
     }
     const PreparedConditioning prepared =
-        build_conditioning(*split_tokenizer_, effective_text, request.prompt, patch_size_value, feat_dim_value);
+        build_conditioning(*split_tokenizer_, effective_text, mode_prompt, patch_size_value, feat_dim_value);
     const int seq_len = static_cast<int>(prepared.full_text_tokens.size());
     std::cerr << "[tts] synth start seq_len=" << prepared.full_text_tokens.size()
-              << " prompt_audio_length=" << request.prompt.prompt_audio_length
-              << " reference_audio_length=" << request.prompt.reference_audio_length
-              << " prompt_feat_size=" << request.prompt.prompt_feat.size()
+              << " prompt_audio_length=" << mode_prompt.prompt_audio_length
+              << " reference_audio_length=" << mode_prompt.reference_audio_length
+              << " prompt_feat_size=" << active_features.size()
               << "\n";
-    const int prompt_audio_length = request.prompt.prompt_audio_length;
     const int target_text_token_count =
         std::max<int>(1, static_cast<int>(split_tokenizer_->tokenize(effective_text).size()));
     const int natural_max_len =
@@ -1019,17 +1132,18 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         const size_t frame_stride = static_cast<size_t>(patch_size_value) * feat_dim_value;
         const int context_frames =
             (has_prompt_audio && request.streaming_prefix_len > 1)
-                ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                ? std::min(request.streaming_prefix_len - 1, mode_prompt.prompt_audio_length)
                 : 0;
+
         const bool use_fallback_streaming_window = request.chunk_callback && !use_output_pool_timeline;
         if (use_fallback_streaming_window) {
             stream_recent_frames.reserve(static_cast<size_t>(request.streaming_prefix_len) * frame_stride);
         }
         if (use_fallback_streaming_window && context_frames > 0) {
-            const size_t context_offset = static_cast<size_t>(prompt_audio_length - context_frames) * frame_stride;
+            const size_t context_offset = static_cast<size_t>(effective_prompt_audio_length - context_frames) * frame_stride;
             stream_recent_frames.insert(stream_recent_frames.end(),
-                                        request.prompt.prompt_feat.begin() + static_cast<std::ptrdiff_t>(context_offset),
-                                        request.prompt.prompt_feat.end());
+                                        active_features.begin() + static_cast<std::ptrdiff_t>(context_offset),
+                                        active_features.end());
         }
 
         for (int step = 0; step < max_len; ++step) {
@@ -1099,7 +1213,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
         }
         const int generated_frames = use_output_pool_timeline
-                                         ? std::max(0, state.audio_frame_count - prompt_audio_length)
+                                         ? std::max(0, state.audio_frame_count - mode_prompt.prompt_audio_length)
                                          : static_cast<int>(generated_steps.size() / frame_stride);
         std::cerr << "[tts] decode loop done generated_frames="
                   << generated_frames
@@ -1121,7 +1235,7 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
 
         int prepended_context_frames = 0;
         const int total_frames = (has_prompt_audio && request.streaming_prefix_len > 1
-                                      ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                                      ? std::min(request.streaming_prefix_len - 1, mode_prompt.prompt_audio_length)
                                       : 0) +
                                  generated_frames;
         const int total_patches = total_frames * patch_size_value;
@@ -1136,11 +1250,11 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
         const int decode_stateful_chunk_frames =
             stateful_audio_decode_chunk_frames(audio_vae_, patch_size_value);
         if (use_output_pool_timeline &&
-            state.audio_frame_count >= prompt_audio_length + generated_frames) {
+            state.audio_frame_count >= mode_prompt.prompt_audio_length + generated_frames) {
             const int frame_offset =
-                std::max(0, prompt_audio_length - std::min(request.streaming_prefix_len - 1, prompt_audio_length));
+                std::max(0, effective_prompt_audio_length - std::min(request.streaming_prefix_len - 1, mode_prompt.prompt_audio_length));
             prepended_context_frames = has_prompt_audio && request.streaming_prefix_len > 1
-                                           ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
+                                           ? std::min(request.streaming_prefix_len - 1, mode_prompt.prompt_audio_length)
                                            : 0;
             if (use_stateful_final_audio_decode) {
                 waveform = decode_audio_stateful_from_output_pool(audio_vae_,
@@ -1169,8 +1283,9 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             }
         } else {
             if (use_stateful_final_audio_decode) {
-                const std::vector<float> decode_frames = build_decode_feature_sequence(request.prompt.prompt_feat,
-                                                                                       prompt_audio_length,
+                const std::vector<float> decode_frames = build_decode_feature_sequence(active_features,
+                                                                                       mode_prompt.prompt_audio_length,
+                                                                                       effective_prompt_audio_length,
                                                                                        generated_steps,
                                                                                        request.streaming_prefix_len,
                                                                                        patch_size_value,
@@ -1190,8 +1305,9 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
                 prepended_context_frames = 0;
             }
             if (waveform.empty()) {
-                latent = build_decode_latent_sequence(request.prompt.prompt_feat,
-                                                      prompt_audio_length,
+                latent = build_decode_latent_sequence(active_features,
+                                                      mode_prompt.prompt_audio_length,
+                                                      effective_prompt_audio_length,
                                                       generated_steps,
                                                       request.streaming_prefix_len,
                                                       patch_size_value,
@@ -1217,6 +1333,44 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
     fail("Retry loop exhausted without producing an accepted sample");
 }
 
+std::vector<float> VoxCPMServiceCore::convert_prompt_feat_to_reference_feat(const std::vector<float>& prompt_feat) {
+    // Note: This may not work well for all voices. Particularly quiet voices.
+
+    const size_t floats_per_patch = static_cast<size_t>(this->patch_size()) * this->feat_dim();
+    const size_t num_patches = prompt_feat.size() / floats_per_patch;
+    if (num_patches == 0) return {};
+
+    // Find the first non-zero patch by checking the mean magnitude of the patch.
+    size_t first_nonzero = 0;
+    for (size_t i = 0; i < num_patches; ++i) {
+        const float* patch_data = prompt_feat.data() + i * floats_per_patch;
+        float sum = 0.0f;
+        for (size_t j = 0; j < floats_per_patch; ++j) {
+            sum += std::abs(patch_data[j]);
+        }
+        if (sum > static_cast<float>(floats_per_patch) * 1e-4f) {
+            first_nonzero = i;
+            break;
+        }
+    }
+
+    // If no padding was added, return a copy.
+    if (first_nonzero == 0) return prompt_feat;
+
+    // Construct right-padded features: [real_patches, zero_patches]
+    std::vector<float> ref_feat;
+    ref_feat.reserve(prompt_feat.size());
+    ref_feat.insert(ref_feat.end(),
+            prompt_feat.data() + first_nonzero * floats_per_patch,
+            prompt_feat.data() + num_patches * floats_per_patch);
+    ref_feat.insert(ref_feat.end(), first_nonzero * floats_per_patch, 0.0f);
+
+    return ref_feat;
+}
+
+ModelVersion VoxCPMServiceCore::model_version() const {
+    return audio_vae_.config().model_version;
+}
 int VoxCPMServiceCore::sample_rate() const {
     return audio_vae_.config().output_sample_rate();
 }

@@ -139,8 +139,10 @@ public:
     bool load_from_gguf(const std::string& gguf_path,
                         VoxCPMContext& weight_ctx,
                         VoxCPMContext& graph_ctx,
-                        VoxCPMBackend& backend);
-    bool load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store);
+                        VoxCPMBackend& backend,
+                        const ModelVersion override_version = ModelVersion::Unknown);
+    bool load_from_store(const std::shared_ptr<VoxCPMWeightStore>& store,
+                         const ModelVersion override_version = ModelVersion::Unknown);
 
     std::vector<float> preprocess(std::vector<float> audio_data, int sample_rate = -1) const;
 
@@ -177,7 +179,8 @@ private:
                                int kernel_size,
                                int stride,
                                int dilation,
-                               int padding) const;
+                               int padding,
+                               int output_padding) const;
 
     ggml_tensor* causal_conv1d_stateful(ggml_context* ctx,
                                         ggml_tensor* x,
@@ -187,6 +190,7 @@ private:
                                         int stride,
                                         int dilation,
                                         int padding,
+                                        int output_padding,
                                         AudioVAEStreamingDecodeState& state,
                                         const std::string& state_name) const;
 

@@ -22,7 +22,7 @@ struct Options {
     std::string host = "127.0.0.1";
     int port = 8080;
     std::string model_path;
-    std::string model_name;
+    ModelVersion model_version_override = ModelVersion::Unknown;
     std::string voice_dir;
     std::string api_key;
     BackendType backend = BackendType::CPU;
@@ -42,6 +42,8 @@ struct RequestContext {
     double speed = 1.0;
     bool sse = false;
     int max_attempts;
+    std::string continue_audio;
+    std::string transcript;
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -74,7 +76,8 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--model-path") {
             options.model_path = require_value("--model-path");
         } else if (arg == "--model-name") {
-            options.model_name = require_value("--model-name");
+            options.model_version_override = parse_model_version_from_str(require_value("--model-name"));
+            if (options.model_version_override == ModelVersion::Unknown) fail("Invalid model string.");
         } else if (arg == "--voice-dir") {
             options.voice_dir = require_value("--voice-dir");
         } else if (arg == "--backend") {
@@ -97,7 +100,7 @@ Options parse_args(int argc, char** argv) {
             options.inference_timesteps = std::stoi(require_value("--inference-timesteps"));
         } else if (arg == "--help" || arg == "-h") {
             std::cout
-                << "Usage: voxcpm-server --model-path MODEL.gguf --model-name NAME --voice-dir DIR [options]\n"
+                << "Usage: voxcpm-server --model-path MODEL.gguf --voice-dir DIR [options]\n"
                 << "Options:\n"
                 << "  --host HOST           Default: 127.0.0.1\n"
                 << "  --port PORT           Default: 8080\n"
@@ -109,6 +112,7 @@ Options parse_args(int argc, char** argv) {
                 << "  --inference-timesteps N  Diffusion steps per chunk. Default: 10. Lower is faster\n"
                 << "  --output-sample-rate HZ  Optional output resample rate before encoding\n"
                 << "  --api-key KEY         Required unless --disable-auth\n"
+                << "  --model-name NAME     Override detection of model version based on signature in model file.\n"
                 << "  --disable-auth\n";
             std::exit(0);
         } else {
@@ -117,7 +121,6 @@ Options parse_args(int argc, char** argv) {
     }
 
     if (options.model_path.empty()) fail("--model-path is required");
-    if (options.model_name.empty()) fail("--model-name is required");
     if (options.voice_dir.empty()) fail("--voice-dir is required");
     if (!options.disable_auth && options.api_key.empty()) fail("--api-key is required unless --disable-auth is set");
     if (options.port < 1 || options.port > 65535) fail("--port must be between 1 and 65535");
@@ -175,13 +178,16 @@ bool authorize(const Options& options, const httplib::Request& req, httplib::Res
     return true;
 }
 
-RequestContext parse_request(const json& body, const Options& options) {
+RequestContext parse_request(const json& body, const Options& options,
+                             const ModelVersion running_model_version) {
     RequestContext ctx;
     if (!body.contains("model") || !body["model"].is_string()) {
         fail("`model` is required and must be a string");
     }
-    if (body["model"].get<std::string>() != options.model_name) {
-        fail("Requested model does not match the configured server model");
+    if (body.contains("model")) {
+        auto v = parse_model_version_from_str(body["model"].get<std::string>());
+        if (v == ModelVersion::Unknown) fail("Requested invalid model (string must match label)");
+        if (v != running_model_version) fail("Requested model does not match the configured server model");
     }
     if (!body.contains("input") || !body["input"].is_string()) {
         fail("`input` is required and must be a string");
@@ -194,22 +200,49 @@ RequestContext parse_request(const json& body, const Options& options) {
     if (body.contains("instructions") && !body["instructions"].is_null()) {
         const std::string instructions = body["instructions"].is_string() ? body["instructions"].get<std::string>() : "";
         if (!instructions.empty()) {
-            throw std::invalid_argument("`instructions` is not supported by VoxCPM v1");
+            if (running_model_version < ModelVersion::v2_0) {
+                    fail("`instructions` are not supported by VoxCPM versions less than 2");
+            }
+
+            switch (static_cast<char32_t>(ctx.input[0])) {
+                case '(':
+                case U'（':
+                    fail("instructions can not be provided both as a J.SON field and in the input text string");
+                default:
+                    ctx.input = "(" + instructions + ")" + ctx.input;
+            }
         }
     }
 
-    if (!body.contains("voice")) {
-        fail("`voice` is required");
+    if (body.contains("continue_audio") || body.contains("transcript")) {
+        if (body.contains("continue_audio")) {
+            if (body["continue_audio"].is_null()) {
+                fail("`continue_audio` was specified with null value");
+            }
+            ctx.continue_audio = body["continue_audio"].get<std::string>();
+        }
+        if (body.contains("transcript")) {
+            if (body["transcript"].is_null()) {
+                fail("`transcript` was specified with null value");
+            }
+            ctx.transcript = body["transcript"].get<std::string>();
+        }
+        if (ctx.continue_audio.empty() || ctx.transcript.empty()) {
+            fail("`continue_audio` and `transcript` can only be used together");
+        }
     }
-    if (body["voice"].is_string()) {
-        ctx.voice_id = body["voice"].get<std::string>();
-    } else if (body["voice"].is_object() && body["voice"].contains("id") && body["voice"]["id"].is_string()) {
-        ctx.voice_id = body["voice"]["id"].get<std::string>();
-    } else {
-        fail("`voice` must be a string or an object with an `id` field");
-    }
-    if (!is_valid_voice_id(ctx.voice_id)) {
-        fail("`voice` must be a valid voice id");
+
+    if (body.contains("voice")) {
+        if (body["voice"].is_string()) {
+            ctx.voice_id = body["voice"].get<std::string>();
+        } else if (body["voice"].is_object() && body["voice"].contains("id") && body["voice"]["id"].is_string()) {
+            ctx.voice_id = body["voice"]["id"].get<std::string>();
+        } else {
+            fail("`voice` must be a string or an object with an `id` field");
+        }
+        if (!is_valid_voice_id(ctx.voice_id)) {
+            fail("`voice` must be a valid voice id");
+        }
     }
 
     const std::string response_format = body.value("response_format", std::string("mp3"));
@@ -353,7 +386,7 @@ int main(int argc, char** argv) {
         const Options options = parse_args(argc, argv);
         ensure_voice_dir_exists(options.voice_dir);
         VoxCPMServiceCore core(options.model_path, options.backend, options.threads);
-        core.load();
+        core.load(options.model_version_override);
         VoiceStore voice_store(options.voice_dir);
         BoundedSynthesisQueue queue(options.max_queue);
 
@@ -376,15 +409,13 @@ int main(int argc, char** argv) {
                 if (!req.form.has_field("id")) {
                     fail("Missing multipart field `id`");
                 }
-                if (!req.form.has_field("text")) {
-                    fail("Missing multipart field `text`");
-                }
+                // Reference audio file is currently still required for voice registration.
                 if (!req.form.has_file("audio")) {
                     fail("Missing multipart file `audio`");
                 }
 
                 const std::string id = req.form.get_field("id");
-                const std::string text = req.form.get_field("text");
+                const std::string text = req.form.has_field("text") ? req.form.get_field("text") : "";
                 if (!is_valid_voice_id(id)) {
                     fail("Invalid voice id");
                 }
@@ -396,8 +427,11 @@ int main(int argc, char** argv) {
                 const auto file = req.form.get_file("audio");
                 const DecodedAudio decoded = decode_audio_from_memory(file.content.data(), file.content.size());
                 const std::vector<float> mono = convert_to_mono(decoded);
-                PromptFeatures features = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
-                voice_store.save_voice(features);
+                PromptFeatures prompt_data = core.encode_prompt_audio(id, text, mono, decoded.sample_rate);
+                PromptFeatures ref_data = core.encode_reference_audio(id, mono, decoded.sample_rate);
+                prompt_data.reference_feat = std::move(ref_data.reference_feat);
+                prompt_data.reference_audio_length = ref_data.reference_audio_length;
+                voice_store.save_voice(prompt_data);
                 respond_json(res, 201, metadata_to_json(voice_store.load_metadata(id)));
             } catch (const std::exception& e) {
                 respond_error(res, 400, e.what(), "invalid_request_error", "bad_request");
@@ -438,7 +472,7 @@ int main(int argc, char** argv) {
 
             try {
                 const json body = json::parse(req.body);
-                const RequestContext ctx = parse_request(body, options);
+                const RequestContext ctx = parse_request(body, options, core.model_version());
                 const int response_sample_rate = effective_output_sample_rate(options, core.sample_rate());
 
                 if (!audio_response_format_supported(ctx.format)) {
@@ -458,11 +492,50 @@ int main(int argc, char** argv) {
                 }
 
                 PromptFeatures prompt;
-                try {
-                    prompt = voice_store.load_voice(ctx.voice_id);
-                } catch (const std::exception&) {
-                    respond_error(res, 400, "Unknown voice id.", "invalid_request_error", "voice_not_found");
-                    return;
+                if (!ctx.voice_id.empty()) {
+                    try {
+                        prompt = voice_store.load_voice(ctx.voice_id);
+                    } catch (const std::exception&) {
+                        respond_error(res, 400, "Unknown voice id.", "invalid_request_error", "voice_not_found");
+                        return;
+                    }
+                    if (prompt.prompt_feat.empty() && prompt.reference_feat.empty()) {
+                        respond_error(res, 400, "Registered voice does not contain any features!", "server_error", "bad_voice_data");
+                        return;
+                    }
+                }
+
+                SynthesisRequest request;
+
+                if (!ctx.continue_audio.empty()) {
+                    std::vector<uint8_t> audio_file_data;
+                    audio_file_data = base64_decode(ctx.continue_audio);
+                    if (audio_file_data.empty()) {
+                        respond_error(res, 400, "Failed to decode audio continuation file.", "invalid_request_error", "bad_audio_file");
+                        return;
+                    }
+                    const DecodedAudio audio_data = decode_audio_from_memory(audio_file_data.data(), audio_file_data.size());
+                    const std::vector<float> mono_waveform = resample_audio_to_rate(
+                        convert_to_mono(audio_data),
+                        audio_data.sample_rate,
+                        core.sample_rate()
+                    );
+                    PromptFeatures extracted_features = core.encode_prompt_audio(ctx.voice_id, "", mono_waveform, core.sample_rate());
+                    if (extracted_features.prompt_feat.empty()) {
+                        respond_error(res, 400, "Failed to parse audio data/features from continuation file.", "invalid_request_error", "bad_audio_file");
+                        return;
+                    }
+                    if (prompt.reference_feat.empty()) {
+                        // Generate reference_feat for voices previously saved with only prompt_feat.
+                        // To do: save the newly generated reference_feat so it does not need to be regenerated each time.
+                        std::cerr << "No reference_feat in saved voice data! Creating reference_feat from prompt_feat.\n";
+                        prompt.reference_feat = core.convert_prompt_feat_to_reference_feat(prompt.prompt_feat);
+                        prompt.reference_audio_length = prompt.prompt_audio_length;
+                    }
+                    prompt.prompt_feat = std::move(extracted_features.prompt_feat);
+                    prompt.prompt_audio_length = extracted_features.prompt_audio_length;
+
+                    prompt.prompt_text = ctx.transcript;
                 }
 
                 if (ctx.sse) {
@@ -502,9 +575,9 @@ int main(int argc, char** argv) {
                     return;
                 }
 
-                SynthesisRequest request;
                 request.text = ctx.input;
                 request.prompt = std::move(prompt);
+                request.has_uploaded_prompt_audio = !ctx.continue_audio.empty();
                 request.max_decode_steps = options.max_decode_steps;
                 request.inference_timesteps = options.inference_timesteps;
                 request.retry_badcase = (ctx.max_attempts == 1 ? false : true);

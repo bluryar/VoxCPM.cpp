@@ -156,7 +156,7 @@ Example response:
 Registers a reusable voice entry by uploading:
 
 - multipart field `id`: required, unique voice id
-- multipart field `text`: required, transcript for the reference audio
+- multipart field `text`: optional, transcript for the reference audio
 - multipart file `audio`: required, reference audio file
 
 Success response: `201 Created`
@@ -212,14 +212,14 @@ JSON request fields:
 
 - `model`: required string, must match the configured `--model-name`
 - `input`: required string, 1 to 4096 characters
-- `voice`: required
+- `voice`: optional
   - string voice id, for example `"taiyi"`
   - or object form `{ "id": "taiyi" }`
 - `response_format`: optional, defaults to `mp3`
   - supported values: `mp3`, `opus`, `flac`, `wav`, `pcm`
 - `speed`: optional float, range `0.25` to `4.0`
 - `stream_format`: optional, `audio` or `sse`
-- `instructions`: accepted for compatibility, but non-empty values currently return an error
+- `instructions`: now supported for v2 model.
 
 Response behavior:
 
@@ -413,7 +413,7 @@ curl -X POST http://127.0.0.1:8080/v1/audio/speech \
 ### Notes
 
 - The current server accepts a voice id string such as `"taiyi"` in the `voice` field.
-- `instructions` is accepted for compatibility but is not implemented in VoxCPM v1.
+- `instructions` is not supported for VoxCPM versions prior to v2.
 - `stream_format` supports `audio` and `sse`; `audio.delta` events carry the same encoded bytes and `format` value as the non-streaming path.
 - `opus` is emitted as an Ogg Opus container, not a raw Opus packet stream.
 - If you run the server under systemd, `CUDA_VISIBLE_DEVICES` only controls GPU visibility.

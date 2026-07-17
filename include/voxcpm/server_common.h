@@ -18,9 +18,9 @@ namespace voxcpm {
 struct PromptFeatures {
     std::string id;
     std::string prompt_text;
-    std::vector<float> prompt_feat;
+    std::vector<float> prompt_feat;    // Left-padded.
     int prompt_audio_length = 0;
-    std::vector<float> reference_feat;
+    std::vector<float> reference_feat; // Right-padded.
     int reference_audio_length = 0;
     int sample_rate = 0;
     int patch_size = 0;
@@ -46,6 +46,7 @@ struct SynthesisRequest {
     PromptFeatures prompt;
     float cfg_value = 2.0f;
     int inference_timesteps = 10;
+    bool has_uploaded_prompt_audio = false;
     int streaming_prefix_len = 4;
     bool retry_badcase = false;
     int retry_badcase_max_times = 3;
@@ -80,7 +81,7 @@ class VoxCPMServiceCore {
 public:
     VoxCPMServiceCore(std::string model_path, BackendType backend_type, int threads);
 
-    void load();
+    void load(const ModelVersion override_version = ModelVersion::Unknown);
     PromptFeatures encode_prompt_audio(const std::string& id,
                                       const std::string& prompt_text,
                                       const std::vector<float>& mono_audio,
@@ -89,7 +90,10 @@ public:
                                          const std::vector<float>& mono_audio,
                                          int sample_rate);
     SynthesisResult synthesize(const SynthesisRequest& request);
+    std::vector<float> convert_prompt_feat_to_reference_feat(
+                                      const std::vector<float>& prompt_feat);
 
+    ModelVersion model_version() const;
     int sample_rate() const;
     int patch_size() const;
     int feat_dim() const;
@@ -104,6 +108,13 @@ private:
                                                 const std::vector<float>& mono_audio,
                                                 int sample_rate);
     SynthesisResult synthesize_locked(const SynthesisRequest& request);
+
+    void prepare_combined_features(std::vector<float>& combined_features,
+                                  const int patch_size_value,
+                                  const int feat_dim_value,
+                                  PromptFeatures& mode_prompt,
+                                  const std::string& effective_text,
+                                  int& effective_prompt_audio_length);
 
     std::string model_path_;
     BackendType backend_type_;
