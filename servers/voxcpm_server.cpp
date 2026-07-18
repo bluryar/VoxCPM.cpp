@@ -44,6 +44,49 @@ struct RequestContext {
     int max_attempts;
 };
 
+struct SseStream {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::deque<std::string> queue;
+    bool done = false;
+
+    // Bounded queue in case of back-pressure (generating faster than output).
+    static constexpr size_t max_queue_size_ = 50;
+    size_t available_slots_ = max_queue_size_;
+    std::condition_variable cv_producer;
+
+    AudioResponseFormat format;
+    int output_sample_rate;
+    float speed;
+    int model_sample_rate;
+    std::string fmt_name;
+    SynthesisRequest req;
+
+    void push_event(const std::string& event) {
+        std::unique_lock<std::mutex> lock(mtx);
+        while (!cv_producer.wait_for(
+            lock,
+            // Timeout when no queue slots are available (client disconnected/stalled).
+            std::chrono::seconds(10),
+            [&]{return available_slots_ > 0 || done;}
+        )) {
+            throw std::runtime_error("Push backpressure timeout");
+        }
+        if (done) return;
+        queue.push_back(event);
+        --available_slots_;
+        cv.notify_one();
+    }
+
+    void finish(const std::string& event) {
+        std::lock_guard<std::mutex> lock(mtx);
+        queue.push_back(event);
+        done = true;
+        cv.notify_all();
+        cv_producer.notify_all();
+    }
+};
+
 [[noreturn]] void fail(const std::string& message) {
     throw std::runtime_error(message);
 }
@@ -466,39 +509,82 @@ int main(int argc, char** argv) {
                 }
 
                 if (ctx.sse) {
-                    std::vector<std::string> events;
-                    SynthesisRequest request;
-                    request.text = ctx.input;
-                    request.prompt = std::move(prompt);
-                    request.max_decode_steps = options.max_decode_steps;
-                    request.inference_timesteps = options.inference_timesteps;
-                    request.chunk_callback = [&](const std::vector<float>& chunk_waveform) {
-                        const std::vector<float> prepared = prepare_response_waveform(chunk_waveform,
-                                                                                      core.sample_rate(),
-                                                                                      response_sample_rate,
-                                                                                      ctx.speed);
-                        const std::vector<uint8_t> encoded = encode_audio(ctx.format, prepared, response_sample_rate);
+                    // Synthesis runs in a detached background thread so the HTTP connection can stream audio out.
+                    // If the server shuts down mid-request, the synthesis continues until the first of either:
+                    //      1: Completion.
+                    //      2: Back-pressure queue blocks at limit and then time-out occurs on the last audio frame.
+                    auto stream = std::make_shared<SseStream>();
+
+                    stream->format = ctx.format;
+                    stream->output_sample_rate = response_sample_rate;
+                    stream->speed = ctx.speed;
+                    stream->model_sample_rate = core.sample_rate();
+                    stream->fmt_name = audio_response_format_name(stream->format);
+
+                    stream->req.text = ctx.input;
+                    stream->req.prompt = std::move(prompt);
+                    stream->req.max_decode_steps = options.max_decode_steps;
+                    stream->req.inference_timesteps = options.inference_timesteps;
+
+                    stream->req.chunk_callback = [stream](const std::vector<float>& chunk_waveform) {
+                        const std::vector<float> prepared = prepare_response_waveform(
+                                chunk_waveform, stream->model_sample_rate, stream->output_sample_rate, stream->speed);
+                        const std::vector<uint8_t> encoded = encode_audio(
+                                stream->format, prepared, stream->output_sample_rate);
                         const std::string encoded64 = base64_encode(encoded.data(), encoded.size());
                         const json payload = {
                             {"type", "audio.delta"},
                             {"delta", encoded64},
-                            {"format", audio_response_format_name(ctx.format)},
+                            {"format", stream->fmt_name},
                         };
-                        events.push_back("event: audio.delta\ndata: " + payload.dump() + "\n\n");
+                        stream->push_event("event: audio.delta\ndata: " + payload.dump() + "\n\n");
                     };
-                    core.synthesize(request);
-                    events.push_back("event: audio.completed\ndata: {\"type\":\"audio.completed\"}\n\n");
+
+                    res.set_header("Content-Type", "text/event-stream");
                     res.set_chunked_content_provider(
                         "text/event-stream",
-                        [events = std::move(events), index = size_t{0}](size_t, httplib::DataSink& sink) mutable {
-                            if (index >= events.size()) {
-                                sink.done();
-                                return true;
-                            }
-                            sink.write(events[index].data(), events[index].size());
-                            ++index;
+                        [stream](size_t /*length*/, httplib::DataSink& sink) mutable -> bool {
+                        std::unique_lock<std::mutex> lock(stream->mtx);
+
+                        // Timeout between generation of audio frames (in case synthesis hangs or crashed).
+                        std::chrono::seconds timeout(30);
+                        if (!stream->cv.wait_for(lock, timeout, [&]{
+                            return !stream->queue.empty() || stream->done;
+                        })) {
+                            // Synthesis timed out — send error and close.
+                            std::string err = "event: audio.error\ndata: {\"type\":\"audio.error\",\"error\":true}\n\n";
+                            lock.unlock();
+                            sink.write(err.data(), err.size());
+                            sink.done();
                             return true;
-                        });
+                        }
+
+                        if (!stream->queue.empty()) {
+                            std::string event = std::move(stream->queue.front());
+                            stream->queue.pop_front();
+                            ++stream->available_slots_;
+                            stream->cv_producer.notify_one();
+                            lock.unlock();
+                            sink.write(event.data(), event.size());
+                            return true;
+                        }
+                        if (stream->done) {
+                            sink.done();
+                            return true;
+                        }
+                        return false;
+                    });
+
+                    std::thread synth_thread([stream, &core]() {
+                        try {
+                            core.synthesize(stream->req);
+                            stream->finish("event: audio.completed\ndata: {\"type\":\"audio.completed\"}\n\n");
+                        } catch (...) {
+                            stream->finish("event: audio.error\ndata: {\"type\":\"audio.error\",\"error\":true}\n\n");
+                        }
+                    });
+                    synth_thread.detach();
+
                     return;
                 }
 
