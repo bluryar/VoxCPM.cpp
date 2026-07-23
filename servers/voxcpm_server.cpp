@@ -526,18 +526,20 @@ int main(int argc, char** argv) {
                     stream->req.max_decode_steps = options.max_decode_steps;
                     stream->req.inference_timesteps = options.inference_timesteps;
 
-                    stream->req.chunk_callback = [stream](const std::vector<float>& chunk_waveform) {
+                    stream->req.chunk_callback = [wp_stream = std::weak_ptr<SseStream>(stream)](const std::vector<float>& chunk_waveform) {
+                        auto locked = wp_stream.lock();
+                        if (!locked) return;
                         const std::vector<float> prepared = prepare_response_waveform(
-                                chunk_waveform, stream->model_sample_rate, stream->output_sample_rate, stream->speed);
+                                chunk_waveform, locked->model_sample_rate, locked->output_sample_rate, locked->speed);
                         const std::vector<uint8_t> encoded = encode_audio(
-                                stream->format, prepared, stream->output_sample_rate);
+                                locked->format, prepared, locked->output_sample_rate);
                         const std::string encoded64 = base64_encode(encoded.data(), encoded.size());
                         const json payload = {
                             {"type", "audio.delta"},
                             {"delta", encoded64},
-                            {"format", stream->fmt_name},
+                            {"format", locked->fmt_name},
                         };
-                        stream->push_event("event: audio.delta\ndata: " + payload.dump() + "\n\n");
+                        locked->push_event("event: audio.delta\ndata: " + payload.dump() + "\n\n");
                     };
 
                     res.set_header("Content-Type", "text/event-stream");
