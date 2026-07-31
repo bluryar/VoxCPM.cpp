@@ -1119,6 +1119,13 @@ SynthesisResult VoxCPMServiceCore::synthesize_locked(const SynthesisRequest& req
             continue;
         }
 
+        // Skip final decode if we are in streaming mode.
+        if (request.chunk_callback) return SynthesisResult{
+            {},
+            audio_vae_.config().output_sample_rate(),
+            generated_frames,
+        };
+
         int prepended_context_frames = 0;
         const int total_frames = (has_prompt_audio && request.streaming_prefix_len > 1
                                       ? std::min(request.streaming_prefix_len - 1, prompt_audio_length)
